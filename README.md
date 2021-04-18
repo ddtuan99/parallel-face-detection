@@ -1,6 +1,14 @@
 # parallel-face-detection
 
-Đồ án môn học Lập trình song song ứng dụng - Phát hiện khuôn mặt bằng Cascaded-Classifiers.
+Đồ án môn học Lập trình song song ứng dụng - Song song hoá và tối ưu hóa ứng dụng Phát hiện khuôn mặt bằng Cascaded-Classifiers.
+
+## Danh sách thành viên
+
+| MSSV | Họ tên | Tài khoản Github |
+| --- | --- | --- |
+| 1712628 | Huỳnh Hiếu Nhân | [nhanhieuhcmus](https://github.com/nhanhieuhcmus) |
+| 1712657 | Chung Kiệt Phong | [dieuminhs](https://github.com/dieuminhs) |
+| 1712869 | Đào Duy Tuấn | [ddtuan99](https://github.com/ddtuan99) |
 
 ## Bảng kết hoạch
 
