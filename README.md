@@ -16,7 +16,7 @@
 <thead>
   <tr>
     <th>Tuần</th>
-    <th>Deadline</th>
+    <th>Thời gian</th>
     <th>HHNhan</th>
     <th>CKPhong</th>
     <th>DDTuan</th>
@@ -26,19 +26,32 @@
 <tbody>
   <tr>
     <td rowspan="3">1</td>
-    <td>15/3-20/3</td>
+    <td>15/4-20/4</td>
     <td colspan="3">Mỗi người tìm hiểu và hoàn thành một phiên bản cho phần 1. Mô tả ứng dụng</td>
     <td>Ai còn thời gian chuẩn bị trước phần thiết kế cho cài đặt tuần tự</td>
   </tr>
   <tr>
-    <td>20/3-21/3</td>
-    <td colspan="3">Trao đổi và tổng hợp nội dung phần 1 vào file báo cáo</td>
-    <td>DDTuan tổng hợp</td>
+    <td>20/4</td>
+    <td colspan="3">Họp nhóm trên Zoom:<br>- Tổng hợp nội dung phần 1 vào file báo cáo<br>- Trao đổi những điều tìm hiểu được</td>
+    <td>HHNhan tổng hợp</td>
   </tr>
   <tr>
-    <td>19/3-21/3</td>
-    <td colspan="3">Hoàn thành phần slide mà mình trình bày ở buổi tới<br></td>
-    <td>DDTuan biên tập lại file sau cùng</td>
+    <td>22/4</td>
+    <td></td>
+    <td></td>
+    <td>Báo cáo tiến độ lần 1 trên lớp</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td rowspan="2">2</td>
+    <td>22/4-24/4</td>
+    <td colspan="3">Mỗi thành viên hoàn thành mục thiết trong phần 2. Cài đặt tuần tự</td>
+    <td>(dự kiến)</td>
+  </tr>
+  <tr>
+    <td>25/4</td>
+    <td colspan="3">Họp nhóm trên Zoom:<br>- Trao đổi để mỗi thành viên hiểu rõ thuật toán<br>- Chọn ra người code khung chương trình</td>
+    <td>(dự kiến)</td>
   </tr>
 </tbody>
 </table>
