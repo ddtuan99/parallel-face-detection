@@ -16,7 +16,17 @@ def convert_rgb2gray(in_pixels, out_pixels):
     out_pixels : numpy.ndarray with shape=(h, w)
         Output image in grayscale
     '''
+    height = in_pixels.shape[0]
+    width = in_pixels.shape[1]
 
+    for r in range(0,height):
+        for c in range(0,width):
+            i = r*width+c
+            red = img[r][c][0]
+            green = img[r][c][1]
+            blue = img[r][c][2]
+    #         print(red,green,blue)
+            out_pixels[r][c] = 0.299*red + 0.587*green + 0.114*blue
     raise NotImplementedError()
 
 
@@ -33,6 +43,13 @@ def calculate_sat(in_pixels, sat):
         Summed Area Table of input image
     '''
 
+    height = in_pixels.shape[0]
+    width = in_pixels.shape[1]
+
+    for r in range(0,height):
+        for c in range(0,width):
+            sat[r][c]=in_pixels[r][c] + sat[r][c-1] + sat[r-1,c] - sat[r-1][c-1];    
+
     raise NotImplementedError()
 
 
@@ -45,8 +62,21 @@ def main():
     ofname = sys.argv[2]
 
     # Read image
+    file_in = open("in.pnm","r")
+    file_type = file_in.readline()
+    dimension = file_in.readline().split()
+    width = int(size[0])
+    height = int(size[1])
+    max_val = int(file_in.readline())
+    rgb = file_in.read().split()
+    rgb = [int(i) for i in rgb]
+    rgb = [width,height]+rgb
     raise NotImplementedError()
     # img = ...
+    img = np.array(rgb)
+    img = np.delete(img,[0,1])
+    img = img.reshape(width,height,3)
+
 
     # Convert image to grayscale using jitted function
     gray_img = np.empty((img.shape[0], img.shape[1]), dtype=img.dtype)
@@ -55,6 +85,7 @@ def main():
     # Convert image to grayscale using Numpy function/operator
     raise NotImplementedError()
     # gray_img_np = ...
+    gray_img_np = np.dot(img[...,:3], [0.299, 0.587, 0.114])
     # ...
 
     # Test convert_rgb2gray
