@@ -1,7 +1,8 @@
+%%writefile sequential.py
 import sys
+import cv2 as cv
 import numpy as np
 from numba import jit
-# import ...
 
 @jit(nopython=True)
 def convert_rgb2gray(in_pixels, out_pixels):
@@ -16,18 +17,12 @@ def convert_rgb2gray(in_pixels, out_pixels):
     out_pixels : numpy.ndarray with shape=(h, w)
         Output image in grayscale
     '''
-    height = in_pixels.shape[0]
-    width = in_pixels.shape[1]
 
-    for r in range(0,height):
-        for c in range(0,width):
-            i = r*width+c
-            red = img[r][c][0]
-            green = img[r][c][1]
-            blue = img[r][c][2]
-    #         print(red,green,blue)
-            out_pixels[r][c] = 0.299*red + 0.587*green + 0.114*blue
-    raise NotImplementedError()
+    for r in range(len(in_pixels)):
+        for c in range(len(in_pixels[0])):
+            out_pixels[r, c] = (in_pixels[r, c, 0] * 0.114 + 
+                                in_pixels[r, c, 1] * 0.587 + 
+                                in_pixels[r, c, 2] * 0.299)
 
 
 @jit(nopython=True)
@@ -43,14 +38,14 @@ def calculate_sat(in_pixels, sat):
         Summed Area Table of input image
     '''
 
-    height = in_pixels.shape[0]
-    width = in_pixels.shape[1]
-
-    for r in range(0,height):
-        for c in range(0,width):
-            sat[r][c]=in_pixels[r][c] + sat[r][c-1] + sat[r-1,c] - sat[r-1][c-1];    
-
-    raise NotImplementedError()
+    sat[0, 0] = in_pixels[0, 0]
+    for c in range(1, len(in_pixels[0])):
+        sat[0, c] = sat[0, c - 1] + in_pixels[0, c]
+    for r in range(1, len(in_pixels)):
+        row_sum = 0
+        for c in range(len(in_pixels[0])):
+            row_sum += in_pixels[r, c]
+            sat[r, c] = row_sum + sat[r - 1, c]
 
 
 def main():
@@ -62,47 +57,29 @@ def main():
     ofname = sys.argv[2]
 
     # Read image
-    file_in = open("in.pnm","r")
-    file_type = file_in.readline()
-    dimension = file_in.readline().split()
-    width = int(size[0])
-    height = int(size[1])
-    max_val = int(file_in.readline())
-    rgb = file_in.read().split()
-    rgb = [int(i) for i in rgb]
-    rgb = [width,height]+rgb
-    raise NotImplementedError()
-    # img = ...
-    img = np.array(rgb)
-    img = np.delete(img,[0,1])
-    img = img.reshape(width,height,3)
-
+    img = cv.imread(ifname)
 
     # Convert image to grayscale using jitted function
     gray_img = np.empty((img.shape[0], img.shape[1]), dtype=img.dtype)
     convert_rgb2gray(img, gray_img)
 
     # Convert image to grayscale using Numpy function/operator
-    raise NotImplementedError()
-    # gray_img_np = ...
-    gray_img_np = np.dot(img[...,:3], [0.299, 0.587, 0.114])
-    # ...
+    gray_img_np = (img @ [0.114, 0.587, 0.299]).astype(np.uint8)
 
     # Test convert_rgb2gray
     print('Jitted vs Numpy error:', 
           np.mean(np.abs(gray_img.astype(np.int16) - gray_img_np)))
     print('Jitted vs Opencv error:', 
           np.mean(np.abs(gray_img.astype(np.int16) - 
-                         cv.cvtColor(img, code=cv.COLOR_RGB2GRAY))))
+                         cv.cvtColor(img, code=cv.COLOR_BGR2GRAY))))
 
     # Calculate summed area table using jitted function
     sat = np.empty(gray_img.shape, dtype=np.int64)
     calculate_sat(gray_img, sat)
 
     # Calculate summed area table using Numpy function/operator
-    raise NotImplementedError()
-    # sat_np = ...
-    # ...
+    sat_np = np.cumsum(gray_img, axis=0, dtype=np.int64)
+    sat_np.cumsum(axis=1, out=sat_np)
 
     # Test
     assert(np.sum(gray_img) == sat[-1, -1])
@@ -110,7 +87,7 @@ def main():
     assert(np.array_equal(sat, sat_np))
 
     # Write image
-    raise NotImplementedError()
+    cv.imwrite(ofname, gray_img)
 
 
 # Execute
