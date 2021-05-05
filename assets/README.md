@@ -1,4 +1,6 @@
-## Source:
+Ảnh minh họa trong báo cáo.
+
+## Nguồn:
 
 [pyimagesearch.com](https://www.pyimagesearch.com/2015/03/23/sliding-windows-for-object-detection-with-python-and-opencv/)
 - brute-force.gif

@@ -43,16 +43,33 @@
     <td></td>
   </tr>
   <tr>
-    <td rowspan="2">2</td>
+    <td rowspan="3">2</td>
     <td>22/4-24/4</td>
-    <td colspan="3">Mỗi thành viên hoàn thành mục thiết trong phần 2. Cài đặt tuần tự</td>
-    <td>(dự kiến)</td>
+    <td colspan="3">Mỗi thành viên hoàn thành mục thiết kế trong phần 2. Cài đặt tuần tự</td>
+    <td>Chưa hoàn thành</td>
   </tr>
   <tr>
     <td>25/4</td>
     <td colspan="3">Họp nhóm trên Zoom:<br>- Trao đổi để mỗi thành viên hiểu rõ thuật toán<br>- Chọn ra người code khung chương trình</td>
-    <td>(dự kiến)</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>26/4-28/4</td>
+    <td></td>
+    <td></td>
+    <td>Code khung cài đặt tuần tự:<br>- Entry point + test code<br>- Chuyển ảnh xám<br>- Tính SAT</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td rowspan="2">3</td>
+    <td>29/4-2/5</td>
+    <td colspan="3">- Tiếp tục hoàn thành phần thiết kế cài đặt tuần tự và tìm hiểu lý thuyết<br>- Hoàn thành phần còn thiếu trong khung code</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>3/5</td>
+    <td colspan="3">Họp nhóm: merge báo cáo và code</td>
+    <td>DDTuan merge</td>
   </tr>
 </tbody>
 </table>
-
