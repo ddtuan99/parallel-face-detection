@@ -1,7 +1,66 @@
 import sys
 import cv2 as cv
 import numpy as np
+import xml.etree.ElementTree as ET
 from numba import jit
+
+
+def load_model():
+    xmlr = ET.parse('models/haarcascade_frontalface_default.xml').getroot()
+    cascade = xmlr.find('cascade')
+    stages = cascade.find('stages')
+    features = cascade.find('features')
+
+    window_size = (int(cascade.find('width').text), 
+                   int(cascade.find('height').text))
+
+    num_stages = len(stages)
+    num_features = len(features)
+
+    stage_thresholds = np.empty(num_stages)
+    tree_counts = np.empty(num_stages + 1, dtype=np.int16)
+    feature_vals = np.empty((num_features, 3), dtype=np.float64)
+
+    ft_cnt = 0
+    tree_counts[0] = 0
+    for stage_idx, stage in enumerate(stages):
+        num_trees = stage.find('maxWeakCount').text
+        stage_threshold = stage.find('stageThreshold').text
+        weak_classifiers = stage.find('weakClassifiers')
+        tree_counts[stage_idx + 1] = tree_counts[stage_idx] + np.int16(num_trees)
+        stage_thresholds[stage_idx] = np.float64(stage_threshold)
+        for tree in weak_classifiers:
+            node = tree.find('internalNodes').text.split()
+            leaf = tree.find('leafValues').text.split()
+            feature_vals[ft_cnt][0] = np.float64(node[3])
+            feature_vals[ft_cnt][1] = np.float64(leaf[0])
+            feature_vals[ft_cnt][2] = np.float64(leaf[1])
+            ft_cnt += 1
+
+    rect_counts = np.empty(num_features + 1, dtype=np.int16)
+
+    rect_counts[0] = 0
+    for ft_idx, feature in enumerate(features):
+        rect_count = len(feature.find('rects'))
+        rect_counts[ft_idx + 1] = rect_counts[ft_idx] + np.int16(rect_count)
+
+    rectangles = np.empty((rect_counts[-1], 5), np.int8)
+
+    rect_cnt = 0
+    for feature in features:
+        rects = feature.find('rects')
+        for rect in rects:
+            rect_vals = rect.text.split()
+            rectangles[rect_cnt][0] = np.int8(rect_vals[0])
+            rectangles[rect_cnt][1] = np.int8(rect_vals[1])
+            rectangles[rect_cnt][2] = np.int8(rect_vals[2])
+            rectangles[rect_cnt][3] = np.int8(rect_vals[3])
+            rectangles[rect_cnt][4] = np.int8(rect_vals[4][:-1])
+            rect_cnt += 1
+
+    return (window_size, stage_thresholds, tree_counts, 
+            feature_vals, rect_counts, rectangles)
+ 
  
 @jit(nopython=True)
 def convert_rgb2gray(in_pixels, out_pixels):
