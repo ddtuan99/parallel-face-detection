@@ -74,6 +74,21 @@ def test_calculate_sat(img, sat):
     assert(total == sat_np[-1, -1])
     assert(np.array_equal(sat, sat_np))
  
+def load_model(file_name):
+    '''
+    Loads a classifier from a file
+
+    filename: Name of the file from which the classifier is loaded
+    '''
+
+    '''
+    stage_thresholds: threshold of each stage to check if whether should we proceed to the next stage or not
+    tree_counts: tree_counts[i] contains number of tree/feature before stage i or index of the first tree of stage i
+    
+    
+    '''
+    return tuple([stage_thresholds, tree_counts, feature_vals, rect_counts, rect_list])
+
  
 def main():
     # Read arguments
