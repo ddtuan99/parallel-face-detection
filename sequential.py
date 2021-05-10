@@ -1,6 +1,7 @@
 import sys
 import cv2 as cv
 import numpy as np
+import xml.etree.ElementTree as ET
 from numba import jit
  
 @jit(nopython=True)
@@ -81,6 +82,45 @@ def load_model(file_name):
     filename: Name of the file from which the classifier is loaded
     '''
 
+    tree = ET.parse('haarcascade_frontalface_default.xml')
+    root = tree.getroot()
+    #root[0]
+
+    stage_thresholds = np.empty(0, dtype = float)
+    tree_counts = np.empty(1, dtype = int)
+    feature_vals = np.empty((0,3), dtype = float)
+    rectangles = np.empty((0,5), dtype = float)
+    rect_counts = np.empty(0, dtype = int)
+
+    for cascade in root:
+        for cascade_item in cascade:
+            # print(cascade, cascade_item)
+            if cascade_item.tag == "stages":
+                for stage in cascade_item:
+                    # results = [int(i) for i in results]
+                    stage_thresholds = np.append(stage_thresholds, [float(i) for i in stage.find('stageThreshold').text.split()])
+                    tree_counts = np.append(tree_counts, [int(i) for i in stage.find('maxWeakCount').text.split()][0] + tree_counts[len(tree_counts)-1])
+
+                    for stage_item in stages:
+                        # print(stage_item)
+                        if stage_item.tag == "weakClassifiers":
+                            for trees in stage_item:
+                                internal_nodes = [float(i) for i in trees.find('internalNodes').text.split()]
+                                leaf_values = [float(i) for i in trees.find('leafValues').text.split()]
+                                feature_vals = np.append(feature_vals,np.array([[internal_nodes[3],leaf_values[0],leaf_values[1]]]),0)
+                                
+            if cascade_item.tag == "features":
+                for feature in cascade_item:
+                    for rects in feature:
+                        rect_counts = np.append(rect_counts, len(rects))                  
+                        for rect in rects:
+                            # print(rect.text.split())
+                            # rect_info = np.array([list(map(float, rect.text.split()))])
+                            rectangles = np.vstack([rectangles, [float(i) for i in rect.text.split()]])
+
+    # len(rectangles)
+
+    
     '''
     stage_thresholds: numpy.ndarray with shape=(nStages)
                     nStages is number of stage used in the classifier
