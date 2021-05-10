@@ -82,10 +82,25 @@ def load_model(file_name):
     '''
 
     '''
-    stage_thresholds: threshold of each stage to check if whether should we proceed to the next stage or not
-    tree_counts: tree_counts[i] contains number of tree/feature before stage i or index of the first tree of stage i
-    
-    
+    stage_thresholds: numpy.ndarray with shape=(nStages)
+                    nStages is number of stage used in the classifier
+                    threshold of each stage to check if whether should we proceed to the next stage or not
+
+    tree_counts: numpy.ndarray with shape=(nStages + 1) 
+                tree_counts[i] contains number of tree/feature before stage i or index of the first tree of stage i,
+                so range(tree_counts[i], tree_counts[i + 1]) will gives all tree's index of stage i
+
+    feature_vals: numpy.ndarray with shape(nFeatures, 3)
+                nFeatures is total number of features used in the classifier
+                Contains (threshold, left_val, right_val) of each features, each feature correspond to a tree with the same index
+
+    rectangles: numpy.ndarray with shape(nRectangles, 5)
+                nRectangles is total number of rectangles used for features in the classifier
+                Contains (x_topleft, y_topleft, width, height, weight) of each rectangle
+
+    rect_counts: numpy.ndarray with shape(nFeatures + 1)
+                A feature consists of 2 or 3 rectangles. rect_counts[i] is the index of first rectangle of feature i,
+                so range(rect_counts[i], rect_counts[i + 1]) give all rectangle's index (in rectangles array) of feature i
     '''
     return tuple([stage_thresholds, tree_counts, feature_vals, rect_counts, rect_list])
 
