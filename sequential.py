@@ -2,6 +2,7 @@ import sys
 import cv2 as cv
 import numpy as np
 from numba import jit
+import xml.etree.ElementTree as ET
  
 @jit(nopython=True)
 def convert_rgb2gray(in_pixels, out_pixels):
@@ -80,6 +81,38 @@ def load_model(file_name):
 
     filename: Name of the file from which the classifier is loaded
     '''
+    tree = ET.parse(file_name)
+    root = tree.getroot()
+
+    max_weak_counts = np.empty(0, dtype = int)
+    stage_thresholds = np.empty(0, dtype = float)
+    tree_counts = np.empty(1, dtype = int)
+    feature_vals = np.empty((0,3), dtype = float)
+    rect_counts = np.empty(0, dtype = int)
+    rect_list = np.empty((0,5), dtype = float)
+    tree_counts[0] = 0
+
+    for child in root:
+        for component in child:
+            if component.tag == "stages":
+                for stage in component:
+                    tree_counts = np.append(tree_counts, list(map(int,stage.find('maxWeakCount').text.split()))[0] + tree_counts[len(tree_counts)-1])
+                    stage_thresholds = np.append(stage_thresholds, list(map(float,stage.find('stageThreshold').text.split())))
+                    for stage_attr in stage:
+                        if stage_attr.tag == "weakClassifiers":
+                            for trees in stage_attr:
+                                threshold = list(map(float,trees.find('internalNodes').text.split()))[3]
+                                left_val = list(map(float,trees.find('leafValues').text.split()))[0]
+                                right_val = list(map(float,trees.find('leafValues').text.split()))[1]
+                                feature_vals = np.append(feature_vals, np.array([[threshold, left_val, right_val]]), 0)
+                                
+            if component.tag == "features":
+                for features in component:
+                    for rects in features:
+                        rect_attr = rects.findall('_')
+                        rect_counts = np.append(rect_counts, len(rects))
+                        for rect in rect_attr:
+                            rect_list = np.append(rect_list, np.array([list(map(float, rect.text.split()))]), 0)
 
     '''
     stage_thresholds: numpy.ndarray with shape=(nStages)
