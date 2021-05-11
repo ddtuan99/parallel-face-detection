@@ -48,6 +48,17 @@ def calculate_sat(in_pixels, sat):
             sat[r, c] = row_sum + sat[r - 1, c]
  
  
+@jit(nopython=True)
+def calculate_squared_sat(in_pixels, squared_sat):
+    squared_satsat[0, 0] = in_pixels[0, 0]**2
+    for c in range(1, len(in_pixels[0])):
+        squared_sat[0, c] = squared_sat[0, c - 1] + in_pixels[0, c]**2
+    for r in range(1, len(in_pixels)):
+        row_sum = 0
+        for c in range(len(in_pixels[0])):
+            row_sum += in_pixels[r, c]**2
+            squared_sat[r, c] = row_sum + squared_sat[r - 1, c]
+
 def test_convert_rgb2gray(img, gray_img):
     '''
     Test convert_rgb2gray function
