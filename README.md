@@ -71,5 +71,27 @@
     <td colspan="3">Họp nhóm: merge báo cáo và code</td>
     <td>DDTuan merge</td>
   </tr>
+  <tr>
+    <td rowspan="2">4</td>
+    <td>4/5-10/5</td>
+    <td colspan="3">Cài đặt một số hàm trong cài đặt tuần tự:<br>- Đọc model<br>- Tính Squared SAT</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>11/5</td>
+    <td colspan="3">Họp nhóm: merge code</td>
+    <td>CKPhong merge</td>
+  </tr>
+  <tr>
+    <td rowspan="2">5</td>
+    <td>12/5-18/5</td>
+    <td colspan="3">- Hoàn thành code Cài đặt tuần tự của ứng dụng<br>- Chỉnh sửa nội dung phần 2.1 Thiết kế và hoàn thành nội dung phần 2.2 Cài đặt tuần tự <br>trong file báo cáo</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>19/5<br></td>
+    <td colspan="3">Họp nhóm: merge báo cáo và code</td>
+    <td></td>
+  </tr>
 </tbody>
 </table>
