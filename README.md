@@ -85,7 +85,7 @@
   <tr>
     <td rowspan="2">5</td>
     <td>12/5-18/5</td>
-    <td colspan="3">- Hoàn thành code Cài đặt tuần tự của ứng dụng<br>- Chỉnh sửa nội dung phần 2.1 Thiết kế và hoàn thành nội dung phần 2.2 Cài đặt tuần tự <br>trong file báo cáo</td>
+    <td colspan="3">- Hoàn thành code Cài đặt tuần tự của ứng dụng<br>- Chỉnh sửa nội dung phần 2.1 Thiết kế và hoàn thành nội dung phần 2.2 Cài đặt tuần tự trong file báo cáo</td>
     <td></td>
   </tr>
   <tr>
