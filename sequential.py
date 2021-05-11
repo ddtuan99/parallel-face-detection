@@ -124,7 +124,7 @@ def load_model(file_name):
     tree_counts = np.empty(1, dtype = int)
     feature_vals = np.empty((0,3), dtype = float)
     rectangles = np.empty((0,5), dtype = float)
-    rect_counts = np.empty(0, dtype = int)
+    rect_counts = np.empty(1, dtype = int)
     tree_counts[0] = 0
     rect_counts[0] = 0
 
