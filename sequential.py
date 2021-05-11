@@ -27,7 +27,7 @@ def convert_rgb2gray(in_pixels, out_pixels):
  
  
 @jit(nopython=True)
-def calculate_sat(in_pixels, sat):
+def calculate_sat(in_pixels, sat, squared_sat):
     '''
     Calculate Summed Area Table (Integral image)
  
@@ -40,13 +40,19 @@ def calculate_sat(in_pixels, sat):
     '''
 
     sat[0, 0] = in_pixels[0, 0]
+    squared_sat[0, 0] = in_pixels[0, 0]**2
+
     for c in range(1, len(in_pixels[0])):
         sat[0, c] = sat[0, c - 1] + in_pixels[0, c]
+        squared_sat[0, c] = squared_sat[0, c - 1] + in_pixels[0, c]**2
+
     for r in range(1, len(in_pixels)):
         row_sum = 0
         for c in range(len(in_pixels[0])):
             row_sum += in_pixels[r, c]
             sat[r, c] = row_sum + sat[r - 1, c]
+            squared_sat[r, c] = row_sum**2 + squared_sat[r - 1, c]
+            
  
 def test_convert_rgb2gray(img, gray_img):
     '''
