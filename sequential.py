@@ -1,8 +1,9 @@
 import sys
 import cv2 as cv
 import numpy as np
-import xml.etree.ElementTree as ET
 from numba import jit
+import xml.etree.ElementTree as ET
+import time
  
 @jit(nopython=True)
 def convert_rgb2gray(in_pixels, out_pixels):
@@ -47,18 +48,6 @@ def calculate_sat(in_pixels, sat):
             row_sum += in_pixels[r, c]
             sat[r, c] = row_sum + sat[r - 1, c]
  
-
-@jit(nopython=True)
-def calculate_squared_sat(in_pixels, squared_sat):
-    squared_satsat[0, 0] = in_pixels[0, 0]**2
-    for c in range(1, len(in_pixels[0])):
-        squared_sat[0, c] = squared_sat[0, c - 1] + in_pixels[0, c]**2
-    for r in range(1, len(in_pixels)):
-        row_sum = 0
-        for c in range(len(in_pixels[0])):
-            row_sum += in_pixels[r, c]**2
-            squared_sat[r, c] = row_sum + squared_sat[r - 1, c]
-
 def test_convert_rgb2gray(img, gray_img):
     '''
     Test convert_rgb2gray function
@@ -89,77 +78,79 @@ def test_calculate_sat(img, sat):
 def load_model(file_name):
     '''
     Loads a classifier from a file
-
     filename: Name of the file from which the classifier is loaded
-    '''
-
-    
-    '''
     stage_thresholds: numpy.ndarray with shape=(nStages)
                     nStages is number of stage used in the classifier
                     threshold of each stage to check if whether should we proceed to the next stage or not
-
     tree_counts: numpy.ndarray with shape=(nStages + 1) 
                 tree_counts[i] contains number of tree/feature before stage i or index of the first tree of stage i,
                 so range(tree_counts[i], tree_counts[i + 1]) will gives all tree's index of stage i
-
     feature_vals: numpy.ndarray with shape(nFeatures, 3)
                 nFeatures is total number of features used in the classifier
                 Contains (threshold, left_val, right_val) of each features, each feature correspond to a tree with the same index
-
     rectangles: numpy.ndarray with shape(nRectangles, 5)
                 nRectangles is total number of rectangles used for features in the classifier
                 Contains (x_topleft, y_topleft, width, height, weight) of each rectangle
-
     rect_counts: numpy.ndarray with shape(nFeatures + 1)
                 A feature consists of 2 or 3 rectangles. rect_counts[i] is the index of first rectangle of feature i,
                 so range(rect_counts[i], rect_counts[i + 1]) give all rectangle's index (in rectangles array) of feature i
     '''
 
-    tree = ET.parse(file_name)
-    root = tree.getroot()
-    #root[0]
+    xmlr = ET.parse(file_name).getroot()
+    cascade = xmlr.find('cascade')
+    stages = cascade.find('stages')
+    features = cascade.find('features')
 
-    stage_thresholds = np.empty(0, dtype = float)
-    tree_counts = np.empty(1, dtype = int)
-    feature_vals = np.empty((0,3), dtype = float)
-    rectangles = np.empty((0,5), dtype = float)
-    rect_counts = np.empty(1, dtype = int)
+    window_size = (int(cascade.find('width').text), 
+                   int(cascade.find('height').text))
+
+    num_stages = len(stages)
+    num_features = len(features)
+
+    stage_thresholds = np.empty(num_stages)
+    tree_counts = np.empty(num_stages + 1, dtype=np.int16)
+    feature_vals = np.empty((num_features, 3), dtype=np.float64)
+
+    ft_cnt = 0
     tree_counts[0] = 0
+    for stage_idx, stage in enumerate(stages):
+        num_trees = stage.find('maxWeakCount').text
+        stage_threshold = stage.find('stageThreshold').text
+        weak_classifiers = stage.find('weakClassifiers')
+        tree_counts[stage_idx + 1] = tree_counts[stage_idx] + np.int16(num_trees)
+        stage_thresholds[stage_idx] = np.float64(stage_threshold)
+        for tree in weak_classifiers:
+            node = tree.find('internalNodes').text.split()
+            leaf = tree.find('leafValues').text.split()
+            feature_vals[ft_cnt][0] = np.float64(node[3])
+            feature_vals[ft_cnt][1] = np.float64(leaf[0])
+            feature_vals[ft_cnt][2] = np.float64(leaf[1])
+            ft_cnt += 1
+
+    rect_counts = np.empty(num_features + 1, dtype=np.int16)
+
     rect_counts[0] = 0
+    for ft_idx, feature in enumerate(features):
+        rect_count = len(feature.find('rects'))
+        rect_counts[ft_idx + 1] = rect_counts[ft_idx] + np.int16(rect_count)
 
-    for cascade in root:
-        for cascade_item in cascade:
-            # print(cascade, cascade_item)
-            if cascade_item.tag == "stages":
-                for stage in cascade_item:
-                    # results = [int(i) for i in results]
-                    stage_thresholds = np.append(stage_thresholds, [float(i) for i in stage.find('stageThreshold').text.split()])
-                    tree_counts = np.append(tree_counts, [int(i) for i in stage.find('maxWeakCount').text.split()][0] + tree_counts[len(tree_counts)-1])
+    rectangles = np.empty((rect_counts[-1], 5), np.int8)
 
-                    for stage_item in stages:
-                        # print(stage_item)
-                        if stage_item.tag == "weakClassifiers":
-                            for trees in stage_item:
-                                internal_nodes = [float(i) for i in trees.find('internalNodes').text.split()]
-                                leaf_values = [float(i) for i in trees.find('leafValues').text.split()]
-                                feature_vals = np.append(feature_vals,np.array([[internal_nodes[3],leaf_values[0],leaf_values[1]]]),0)
-                                
-            if cascade_item.tag == "features":
-                for feature in cascade_item:
-                    for rects in feature:
-                        rect_counts = np.append(rect_counts, len(rects)) + rect_counts[len(rect_counts)-1]               
-                        for rect in rects:
-                            # print(rect.text.split())
-                            # rect_info = np.array([list(map(float, rect.text.split()))])
-                            rectangles = np.vstack([rectangles, [float(i) for i in rect.text.split()]])
+    rect_cnt = 0
+    for feature in features:
+        rects = feature.find('rects')
+        for rect in rects:
+            rect_vals = rect.text.split()
+            rectangles[rect_cnt][0] = np.int8(rect_vals[0])
+            rectangles[rect_cnt][1] = np.int8(rect_vals[1])
+            rectangles[rect_cnt][2] = np.int8(rect_vals[2])
+            rectangles[rect_cnt][3] = np.int8(rect_vals[3])
+            rectangles[rect_cnt][4] = np.int8(rect_vals[4][:-1])
+            rect_cnt += 1
 
-    # len(rectangles)
+    return (window_size, stage_thresholds, tree_counts, 
+            feature_vals, rect_counts, rectangles)
 
-    
-    return tuple([stage_thresholds, tree_counts, feature_vals, rect_counts, rect_list])
-
- 
 def main():
     # Read arguments
     if len(sys.argv) != 3:
@@ -183,7 +174,6 @@ def main():
  
     # Write image
     cv.imwrite(ofname, gray_img)
- 
- 
+
 # Execute
 main()
