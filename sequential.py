@@ -47,7 +47,7 @@ def calculate_sat(in_pixels, sat):
             row_sum += in_pixels[r, c]
             sat[r, c] = row_sum + sat[r - 1, c]
  
- 
+
 @jit(nopython=True)
 def calculate_squared_sat(in_pixels, squared_sat):
     squared_satsat[0, 0] = in_pixels[0, 0]**2
@@ -93,44 +93,6 @@ def load_model(file_name):
     filename: Name of the file from which the classifier is loaded
     '''
 
-    tree = ET.parse('haarcascade_frontalface_default.xml')
-    root = tree.getroot()
-    #root[0]
-
-    stage_thresholds = np.empty(0, dtype = float)
-    tree_counts = np.empty(1, dtype = int)
-    feature_vals = np.empty((0,3), dtype = float)
-    rectangles = np.empty((0,5), dtype = float)
-    rect_counts = np.empty(0, dtype = int)
-
-    for cascade in root:
-        for cascade_item in cascade:
-            # print(cascade, cascade_item)
-            if cascade_item.tag == "stages":
-                for stage in cascade_item:
-                    # results = [int(i) for i in results]
-                    stage_thresholds = np.append(stage_thresholds, [float(i) for i in stage.find('stageThreshold').text.split()])
-                    tree_counts = np.append(tree_counts, [int(i) for i in stage.find('maxWeakCount').text.split()][0] + tree_counts[len(tree_counts)-1])
-
-                    for stage_item in stages:
-                        # print(stage_item)
-                        if stage_item.tag == "weakClassifiers":
-                            for trees in stage_item:
-                                internal_nodes = [float(i) for i in trees.find('internalNodes').text.split()]
-                                leaf_values = [float(i) for i in trees.find('leafValues').text.split()]
-                                feature_vals = np.append(feature_vals,np.array([[internal_nodes[3],leaf_values[0],leaf_values[1]]]),0)
-                                
-            if cascade_item.tag == "features":
-                for feature in cascade_item:
-                    for rects in feature:
-                        rect_counts = np.append(rect_counts, len(rects))                  
-                        for rect in rects:
-                            # print(rect.text.split())
-                            # rect_info = np.array([list(map(float, rect.text.split()))])
-                            rectangles = np.vstack([rectangles, [float(i) for i in rect.text.split()]])
-
-    # len(rectangles)
-
     
     '''
     stage_thresholds: numpy.ndarray with shape=(nStages)
@@ -153,6 +115,48 @@ def load_model(file_name):
                 A feature consists of 2 or 3 rectangles. rect_counts[i] is the index of first rectangle of feature i,
                 so range(rect_counts[i], rect_counts[i + 1]) give all rectangle's index (in rectangles array) of feature i
     '''
+
+    tree = ET.parse(file_name)
+    root = tree.getroot()
+    #root[0]
+
+    stage_thresholds = np.empty(0, dtype = float)
+    tree_counts = np.empty(1, dtype = int)
+    feature_vals = np.empty((0,3), dtype = float)
+    rectangles = np.empty((0,5), dtype = float)
+    rect_counts = np.empty(0, dtype = int)
+    tree_counts[0] = 0
+    rect_counts[0] = 0
+
+    for cascade in root:
+        for cascade_item in cascade:
+            # print(cascade, cascade_item)
+            if cascade_item.tag == "stages":
+                for stage in cascade_item:
+                    # results = [int(i) for i in results]
+                    stage_thresholds = np.append(stage_thresholds, [float(i) for i in stage.find('stageThreshold').text.split()])
+                    tree_counts = np.append(tree_counts, [int(i) for i in stage.find('maxWeakCount').text.split()][0] + tree_counts[len(tree_counts)-1])
+
+                    for stage_item in stages:
+                        # print(stage_item)
+                        if stage_item.tag == "weakClassifiers":
+                            for trees in stage_item:
+                                internal_nodes = [float(i) for i in trees.find('internalNodes').text.split()]
+                                leaf_values = [float(i) for i in trees.find('leafValues').text.split()]
+                                feature_vals = np.append(feature_vals,np.array([[internal_nodes[3],leaf_values[0],leaf_values[1]]]),0)
+                                
+            if cascade_item.tag == "features":
+                for feature in cascade_item:
+                    for rects in feature:
+                        rect_counts = np.append(rect_counts, len(rects)) + rect_counts[len(rect_counts)-1]               
+                        for rect in rects:
+                            # print(rect.text.split())
+                            # rect_info = np.array([list(map(float, rect.text.split()))])
+                            rectangles = np.vstack([rectangles, [float(i) for i in rect.text.split()]])
+
+    # len(rectangles)
+
+    
     return tuple([stage_thresholds, tree_counts, feature_vals, rect_counts, rect_list])
 
  
