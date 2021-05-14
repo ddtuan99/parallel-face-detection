@@ -6,29 +6,44 @@ import xml.etree.ElementTree as ET
  
 def load_model(file_name):
     '''
-	Load Opencv's Haar Cascade pre-trained model.
+    Load Opencv's Haar Cascade pre-trained model.
+    
+    Parameter
+    ---------
+    filename: Name of the file from which the classifier is loaded.
  
-    filename: Name of the file from which the classifier is loaded
+    Returns
+    -------
+    A tuple contains below numpy arrays:
+
+    window_size : tuple with shape=(2)
+        Base width and height of detection window.
+
+    stage_thresholds : numpy.ndarray with shape=(num_stages)
+        num_stages is number of stage used in the classifier.
+        threshold of each stage to check if we proceed to the next stage.
  
-    stage_thresholds: numpy.ndarray with shape=(nStages)
-                    nStages is number of stage used in the classifier
-                    threshold of each stage to check if whether should we proceed to the next stage or not
+    tree_counts : numpy.ndarray with shape=(num_stages + 1) 
+        `tree_counts[i]` is the number of tree/feature before stage `i` i.e. 
+        index of the first tree of stage `i`. Therefore, 
+        `range(tree_counts[i], tree_counts[i + 1])` will give range of trees' 
+        index (in `feature_vals` array) of stage `i`.
  
-    tree_counts: numpy.ndarray with shape=(nStages + 1) 
-                tree_counts[i] contains number of tree/feature before stage i or index of the first tree of stage i,
-                so range(tree_counts[i], tree_counts[i + 1]) will gives all tree's index of stage i
+    feature_vals : numpy.ndarray with shape(num_features, 3)
+        num_features is the total number of feature used in the classifier.
+        3 is (threshold, left_val, right_val) of each tree.
+        Each feature correspond to a tree.
+    
+    rect_counts : numpy.ndarray with shape(num_features + 1)
+        A feature consists of 2 or 3 rectangles. `rect_counts[i]` is the index 
+        of the first rectangle of feature `i`. Therefore, 
+        `range(rect_counts[i], rect_counts[i + 1])` give all rectangle's index 
+        (in `rectangles` array) of feature `i`.
  
-    feature_vals: numpy.ndarray with shape(nFeatures, 3)
-                nFeatures is total number of features used in the classifier
-                Contains (threshold, left_val, right_val) of each features, each feature correspond to a tree with the same index
- 
-    rectangles: numpy.ndarray with shape(nRectangles, 5)
-                nRectangles is total number of rectangles used for features in the classifier
-                Contains (x_topleft, y_topleft, width, height, weight) of each rectangle
- 
-    rect_counts: numpy.ndarray with shape(nFeatures + 1)
-                A feature consists of 2 or 3 rectangles. rect_counts[i] is the index of first rectangle of feature i,
-                so range(rect_counts[i], rect_counts[i + 1]) give all rectangle's index (in rectangles array) of feature i
+    rectangles : numpy.ndarray with shape(num_rectangles, 5)
+        num_rectangles is the total number of rectangle of all features in the 
+        classifier.
+        5 is (x_topleft, y_topleft, width, height, weight) of each rectangle.
     '''
  
     xmlr = ET.parse(file_name).getroot()
