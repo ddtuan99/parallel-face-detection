@@ -10,13 +10,13 @@ def load_model(file_name):
     
     Parameter
     ---------
-    filename: Name of the file from which the classifier is loaded.
+    file_name: Name of the file from which the classifier is loaded.
  
     Returns
     -------
     A tuple contains below numpy arrays:
 
-    window_size : tuple with shape=(2)
+    window_size : numpy.ndarray with shape=(2)
         Base width and height of detection window.
 
     stage_thresholds : numpy.ndarray with shape=(num_stages)
@@ -51,8 +51,8 @@ def load_model(file_name):
     stages = cascade.find('stages')
     features = cascade.find('features')
  
-    window_size = (int(cascade.find('width').text), 
-                   int(cascade.find('height').text))
+    window_size = np.array([int(cascade.find('width').text), 
+                            int(cascade.find('height').text)])
  
     num_stages = len(stages)
     num_features = len(features)
@@ -148,6 +148,132 @@ def calculate_sat(in_pixels, sat, sqsat):
             row_sqsum += in_pixels[r, c] ** 2
             sat[r + 1, c + 1] = row_sum + sat[r, c + 1]
             sqsat[r + 1, c + 1] = row_sqsum + sqsat[r, c + 1]
+
+
+@jit(nopython=True)
+def draw_rect(img, rect, color=0, thick=1):
+    '''
+
+    '''
+
+    (x, y, w, h), t = rect, thick
+    img[y:y+h,x-t:x+t+1] = color
+    img[y:y+h,x+w-t:x+w+t+1] = color
+    img[y-t:y+t+1,x:x+w] = color
+    img[y+h-t:y+h+t+1,x:x+w] = color
+
+
+@jit(nopython=True)
+def calc_sum_rect(sat, loc, rect, scale):
+    '''
+
+    '''
+
+    tlx = loc[0] + np.int32(rect[0] * scale)
+    tly = loc[1] + np.int32(rect[1] * scale)
+    brx = loc[0] + np.int32((rect[0] + rect[2]) * scale)
+    bry = loc[1] + np.int32((rect[1] + rect[3]) * scale)
+    return (sat[tly, tlx] + sat[bry, brx] - sat[bry, tlx] - sat[tly, brx]) * rect[4]
+
+
+@jit(nopython=True)
+def detect_at(model, sats, point, scale):
+    '''
+
+    '''
+
+    base_win_sz, stage_thresholds, tree_counts, \
+        feature_vals, rect_counts, rectangles = model
+    sat, sqsat = sats
+
+    w, h = int(base_win_sz[0] * scale), int(base_win_sz[1] * scale)
+    inv_area = 1 / (w * h)
+
+    x, y = point
+    win_sum = sat[y][x] + sat[y+h][x+w] - sat[y][x+w] - sat[y+h][x]
+    win_sqsum = sqsat[y][x] + sqsat[y+h][x+w] - sqsat[y][x+w] - sqsat[y+h][x]
+    variance = win_sqsum * inv_area - (win_sum * inv_area) ** 2
+
+    # Reject low-variance intensity region, also take care of negative variance
+    # value due to inaccuracy floating point operation.
+    if variance < 100:
+        return -1
+
+    std = np.sqrt(variance)
+
+    num_stages = len(stage_thresholds)
+    for stg_idx in range(num_stages):
+        stg_sum = 0.0
+        for tr_idx in range(tree_counts[stg_idx], tree_counts[stg_idx+1]): 
+            # Implement stump-base decision tree (tree has one feature) for now.
+            # Each feature consists of 2 or 3 rectangle.
+            rect_idx = rect_counts[tr_idx]
+            ft_sum = (calc_sum_rect(sat, point, rectangles[rect_idx], scale) + 
+                      calc_sum_rect(sat, point, rectangles[rect_idx+1], scale))
+            if rect_idx + 2 < rect_counts[tr_idx+1]:
+                ft_sum += calc_sum_rect(sat, point, rectangles[rect_idx+2], scale)
+            
+            # Compare ft_sum/(area*std) with threshold to choose return value.
+            stg_sum += (feature_vals[tr_idx][1] 
+                        if ft_sum * inv_area < feature_vals[tr_idx][0] * std 
+                        else feature_vals[tr_idx][2])
+
+        if stg_sum < stage_thresholds[stg_idx]:
+            return stg_idx
+    
+    return num_stages
+
+
+def detect_multi_scale(model, sats, out_img, base_scale=1.0, scale_factor=1.1, 
+                       shift_raito=0.1, min_neighbors=3):
+    '''
+
+    '''
+
+    win_size = model[0]
+    num_stages = len(model[1])
+    scale = base_scale
+    height, width = out_img.shape[:-1]
+    max_scale = min(width / win_size[0], height / win_size[1])
+
+    rec_list = []
+    while scale < max_scale:
+        cur_win_size = (win_size * scale).astype(np.int32)
+        step = (cur_win_size * shift_raito).astype(np.int32)
+
+        for y in range(0, height - cur_win_size[1], step[1]):
+            for x in range(0, width - cur_win_size[0], step[0]):
+                if detect_at(model, sats, (x, y), scale) == num_stages:
+                    rec_list.append((x, y, int(cur_win_size[0]), int(cur_win_size[1])))
+
+        scale *= scale_factor
+
+    merged_rec_list = cv.groupRectangles(rec_list, min_neighbors)[0]
+    for rec in merged_rec_list:
+        draw_rect(out_img, rec, 0)
+
+
+def run(model, in_img, out_img, debug):
+    '''
+
+    '''
+
+    height, width = in_img.shape[:-1]
+
+    # Convert image to grayscale
+    gray_img = np.empty((height, width), dtype=in_img.dtype)
+    convert_rgb2gray(in_img, gray_img)
+    if debug: test_convert_rgb2gray(in_img, gray_img)
+ 
+    # Calculate Summed Area Table (SAT) and squared SAT
+    sat = np.empty((height + 1, width + 1), dtype=np.int64)
+    sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
+    calculate_sat(gray_img, sat, sqsat)
+    if debug: test_calculate_sat(gray_img, sat)
+    if debug: test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
+
+    # Detect object
+    detect_multi_scale(model, (sat, sqsat), out_img, shift_raito=0.05)
  
  
 def test_convert_rgb2gray(img, gray_img):
@@ -168,9 +294,9 @@ def test_calculate_sat(img, sat):
     '''
     Test calculate_sat function
     '''
- 
-    sat_np = np.cumsum(img, axis=0, dtype=np.int64)
-    np.cumsum(sat_np, axis=1, out=sat_np)
+
+    sat_np = np.array(img, dtype=np.int64)
+    sat_np.cumsum(axis=0, out=sat_np).cumsum(axis=1, out=sat_np)
  
     total = np.sum(img)
     assert(total == sat[-1, -1])
@@ -190,24 +316,15 @@ def main():
     #Load Haar Cascade model
     model = load_model(mfname)
  
-    # Read image
-    img = cv.imread(ifname)
-    height, width = img.shape[:-1]
+    # Read input image
+    in_img = cv.imread(ifname)
+    out_img = in_img.copy()
  
-    # Convert image to grayscale
-    gray_img = np.empty((height, width), dtype=img.dtype)
-    convert_rgb2gray(img, gray_img)
-    test_convert_rgb2gray(img, gray_img)
+    # Run object detection workflow
+    run(model, in_img, out_img, True)
  
-    # Calculate Summed Area Table (SAT) and squared SAT
-    sat = np.empty((height + 1, width + 1), dtype=np.int64)
-    sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
-    calculate_sat(gray_img, sat, sqsat)
-    test_calculate_sat(gray_img, sat)
-    test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
- 
-    # Write image
-    cv.imwrite(ofname, gray_img)
+    # Write output image
+    cv.imwrite(ofname, out_img)
  
  
 # Execute
