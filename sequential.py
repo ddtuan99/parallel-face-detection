@@ -3,7 +3,105 @@ import cv2 as cv
 import numpy as np
 from numba import jit
 import xml.etree.ElementTree as ET
-import time
+import math
+ 
+def load_model(file_name):
+    '''
+    Load Opencv's Haar Cascade pre-trained model.
+    
+    Parameter
+    ---------
+    filename: Name of the file from which the classifier is loaded.
+ 
+    Returns
+    -------
+    A tuple contains below numpy arrays:
+
+    window_size : tuple with shape=(2)
+        Base width and height of detection window.
+
+    stage_thresholds : numpy.ndarray with shape=(num_stages)
+        num_stages is number of stage used in the classifier.
+        threshold of each stage to check if we proceed to the next stage.
+ 
+    tree_counts : numpy.ndarray with shape=(num_stages + 1) 
+        `tree_counts[i]` is the number of tree/feature before stage `i` i.e. 
+        index of the first tree of stage `i`. Therefore, 
+        `range(tree_counts[i], tree_counts[i + 1])` will give range of trees' 
+        index (in `feature_vals` array) of stage `i`.
+ 
+    feature_vals : numpy.ndarray with shape(num_features, 3)
+        num_features is the total number of feature used in the classifier.
+        3 is (threshold, left_val, right_val) of each tree.
+        Each feature correspond to a tree.
+    
+    rect_counts : numpy.ndarray with shape(num_features + 1)
+        A feature consists of 2 or 3 rectangles. `rect_counts[i]` is the index 
+        of the first rectangle of feature `i`. Therefore, 
+        `range(rect_counts[i], rect_counts[i + 1])` give all rectangle's index 
+        (in `rectangles` array) of feature `i`.
+ 
+    rectangles : numpy.ndarray with shape(num_rectangles, 5)
+        num_rectangles is the total number of rectangle of all features in the 
+        classifier.
+        5 is (x_topleft, y_topleft, width, height, weight) of each rectangle.
+    '''
+ 
+    xmlr = ET.parse(file_name).getroot()
+    cascade = xmlr.find('cascade')
+    stages = cascade.find('stages')
+    features = cascade.find('features')
+ 
+    window_size = (int(cascade.find('width').text), 
+                   int(cascade.find('height').text))
+ 
+    num_stages = len(stages)
+    num_features = len(features)
+ 
+    stage_thresholds = np.empty(num_stages)
+    tree_counts = np.empty(num_stages + 1, dtype=np.int16)
+    feature_vals = np.empty((num_features, 3), dtype=np.float64)
+ 
+    ft_cnt = 0
+    tree_counts[0] = 0
+    for stage_idx, stage in enumerate(stages):
+        num_trees = stage.find('maxWeakCount').text
+        stage_threshold = stage.find('stageThreshold').text
+        weak_classifiers = stage.find('weakClassifiers')
+        tree_counts[stage_idx + 1] = tree_counts[stage_idx] + np.int16(num_trees)
+        stage_thresholds[stage_idx] = np.float64(stage_threshold)
+        for tree in weak_classifiers:
+            node = tree.find('internalNodes').text.split()
+            leaf = tree.find('leafValues').text.split()
+            feature_vals[ft_cnt][0] = np.float64(node[3])
+            feature_vals[ft_cnt][1] = np.float64(leaf[0])
+            feature_vals[ft_cnt][2] = np.float64(leaf[1])
+            ft_cnt += 1
+ 
+    rect_counts = np.empty(num_features + 1, dtype=np.int16)
+ 
+    rect_counts[0] = 0
+    for ft_idx, feature in enumerate(features):
+        rect_count = len(feature.find('rects'))
+        rect_counts[ft_idx + 1] = rect_counts[ft_idx] + np.int16(rect_count)
+ 
+    rectangles = np.empty((rect_counts[-1], 5), np.int8)
+ 
+    rect_cnt = 0
+    for feature in features:
+        rects = feature.find('rects')
+        for rect in rects:
+            rect_vals = rect.text.split()
+            rectangles[rect_cnt][0] = np.int8(rect_vals[0])
+            rectangles[rect_cnt][1] = np.int8(rect_vals[1])
+            rectangles[rect_cnt][2] = np.int8(rect_vals[2])
+            rectangles[rect_cnt][3] = np.int8(rect_vals[3])
+            rectangles[rect_cnt][4] = np.int8(rect_vals[4][:-1])
+            rect_cnt += 1
+ 
+    return (window_size, stage_thresholds, tree_counts, 
+            feature_vals, rect_counts, rectangles)
+ 
  
 @jit(nopython=True)
 def convert_rgb2gray(in_pixels, out_pixels):
@@ -27,32 +125,37 @@ def convert_rgb2gray(in_pixels, out_pixels):
  
  
 @jit(nopython=True)
-def calculate_sat(in_pixels, sat):
+def calculate_sat(in_pixels, sat, sqsat):
     '''
-    Calculate Summed Area Table (Integral image)
+    Calculate Summed Area Table (SAT) and Squared SAT
  
     in_pixels : numpy.ndarray with shape=(h, w)
                 h, w is height, width of image
         Grayscale image need to calculate SAT
     
-    sat : numpy.ndarray with shape=(h, w)
-        Summed Area Table of input image
+    sat : numpy.ndarray with shape=(h + 1, w + 1)
+        SAT 0-padding at top and left side of input image
+ 
+    sqsat : numpy.ndarray with shape=(h + 1, w + 1)
+        Squared SAT 0-padding at top and left side of input image
     '''
-
-    sat[0, 0] = in_pixels[0, 0]
-    for c in range(1, len(in_pixels[0])):
-        sat[0, c] = sat[0, c - 1] + in_pixels[0, c]
-    for r in range(1, len(in_pixels)):
-        row_sum = 0
+ 
+    sat[0, :], sqsat[0, :] = 0, 0
+    for r in range(len(in_pixels)):
+        row_sum, row_sqsum = 0, 0
+        sat[r + 1, 0], sqsat[r + 1, 0] = 0, 0
         for c in range(len(in_pixels[0])):
             row_sum += in_pixels[r, c]
-            sat[r, c] = row_sum + sat[r - 1, c]
+            row_sqsum += in_pixels[r, c] ** 2
+            sat[r + 1, c + 1] = row_sum + sat[r, c + 1]
+            sqsat[r + 1, c + 1] = row_sqsum + sqsat[r, c + 1]
+ 
  
 def test_convert_rgb2gray(img, gray_img):
     '''
     Test convert_rgb2gray function
     '''
-
+ 
     gray_img_np = (img @ [0.114, 0.587, 0.299]).astype(np.uint8)
     gray_img_cv = cv.cvtColor(img, code=cv.COLOR_BGR2GRAY)
  
@@ -70,110 +173,126 @@ def test_calculate_sat(img, sat):
     sat_np = np.cumsum(img, axis=0, dtype=np.int64)
     np.cumsum(sat_np, axis=1, out=sat_np)
  
-    total = np.sum(img) 
+    total = np.sum(img)
     assert(total == sat[-1, -1])
     assert(total == sat_np[-1, -1])
-    assert(np.array_equal(sat, sat_np))
+    assert(np.array_equal(sat[1:, 1:], sat_np))
  
-def load_model(file_name):
-    '''
-    Loads a classifier from a file
-    filename: Name of the file from which the classifier is loaded
-    stage_thresholds: numpy.ndarray with shape=(nStages)
-                    nStages is number of stage used in the classifier
-                    threshold of each stage to check if whether should we proceed to the next stage or not
-    tree_counts: numpy.ndarray with shape=(nStages + 1) 
-                tree_counts[i] contains number of tree/feature before stage i or index of the first tree of stage i,
-                so range(tree_counts[i], tree_counts[i + 1]) will gives all tree's index of stage i
-    feature_vals: numpy.ndarray with shape(nFeatures, 3)
-                nFeatures is total number of features used in the classifier
-                Contains (threshold, left_val, right_val) of each features, each feature correspond to a tree with the same index
-    rectangles: numpy.ndarray with shape(nRectangles, 5)
-                nRectangles is total number of rectangles used for features in the classifier
-                Contains (x_topleft, y_topleft, width, height, weight) of each rectangle
-    rect_counts: numpy.ndarray with shape(nFeatures + 1)
-                A feature consists of 2 or 3 rectangles. rect_counts[i] is the index of first rectangle of feature i,
-                so range(rect_counts[i], rect_counts[i + 1]) give all rectangle's index (in rectangles array) of feature i
-    '''
+'''
+decide to turn left or right
+return value is 0 or 1, respective to LEFT or RIGHT
+'''
+@jit(nopython=True)
+def get_left_or_right(gray_image, sqsat, i, j, x, y, scale, feature_id, feature_vals, rect_counts, rectangles):
+    w = np.int16(scale + x)
+    h = np.int16(scale + y)
+    inv_area = np.double(1.0/(w*h))
+    total_x = gray_image[i + h][j + w]+ gray_image[i][j] - gray_image[i][j + w] - gray_image[i + h][j]
+    total_x2 = sqsat[i + h][j + w] + sqsat[i][j] - sqsat[i][j + w] - sqsat[i + h][j]
+    moy = np.double(total_x*inv_area)
+    vnorm = np.double(total_x2*inv_area-moy*moy)
+    vnorm = math.sqrt(vnorm) if vnorm > 1 else 1
+    
+    rect_sum = 0
+    curr_rect_count = rect_counts[feature_id+1]-rect_counts[feature_id]
+    for i in range(curr_rect_count):
+        r = rectangles[feature_id+i]
+        rx1 = np.int16(i + scale*r[0])
+        rx2 = np.int16(i + scale*(r[0]+r[1]))
+        ry1 = np.int16(j + scale*(r[0]+r[2]))
+        ry2 = np.int16(j + scale*(r[0]+r[2]+r[1]+r[3]))
+        rect_sum += np.int16((gray_image[rx2][ry2]-gray_image[rx1][ry2]-gray_image[rx2][ry1]+gray_image[rx1][ry1])*r[4])
+    rect_sum2 = np.double(rect_sum*inv_area)
+    threshold = feature_vals[feature_id][0]
+    return 0 if rect_sum2 < threshold*vnorm else 1
 
-    xmlr = ET.parse(file_name).getroot()
-    cascade = xmlr.find('cascade')
-    stages = cascade.find('stages')
-    features = cascade.find('features')
+@jit(nopython=True)
+def get_val(gray_image, i, j, x,y, scale, sqsat,feature_id, feature_vals, rect_counts, rectangles):  
+    where = get_left_or_right(gray_image, sqsat, i, j, x, y, scale, feature_id, feature_vals, rect_counts, rectangles)
+    if where == 0:
+        return feature_vals[feature_id][1]
+    else: 
+        return feature_vals[feature_id][2]
 
-    window_size = (int(cascade.find('width').text), 
-                   int(cascade.find('height').text))
+'''
 
-    num_stages = len(stages)
-    num_features = len(features)
+If the sum of these values exceeds the threshold, the stage passes
+else it fails (the window is not the object looked for).
 
-    stage_thresholds = np.empty(num_stages)
-    tree_counts = np.empty(num_stages + 1, dtype=np.int16)
-    feature_vals = np.empty((num_features, 3), dtype=np.float64)
+'''
+@jit(nopython=True)
+def check_passed(gray_image, i, j, x,y, scale, sqsat, feature_vals, rect_counts, rectangles, tree_counts, stage_thresholds, stage_thresholds_id):
+    sum = 0
+    tree_nb = tree_counts[stage_thresholds_id+1]-tree_counts[stage_thresholds_id]
+    for feature_id in range(tree_nb):
+        sum+=get_val(gray_image, i, j, x,y, scale, sqsat,feature_id, feature_vals, rect_counts, rectangles)
+    return sum>stage_thresholds[stage_thresholds_id]
 
-    ft_cnt = 0
-    tree_counts[0] = 0
-    for stage_idx, stage in enumerate(stages):
-        num_trees = stage.find('maxWeakCount').text
-        stage_threshold = stage.find('stageThreshold').text
-        weak_classifiers = stage.find('weakClassifiers')
-        tree_counts[stage_idx + 1] = tree_counts[stage_idx] + np.int16(num_trees)
-        stage_thresholds[stage_idx] = np.float64(stage_threshold)
-        for tree in weak_classifiers:
-            node = tree.find('internalNodes').text.split()
-            leaf = tree.find('leafValues').text.split()
-            feature_vals[ft_cnt][0] = np.float64(node[3])
-            feature_vals[ft_cnt][1] = np.float64(leaf[0])
-            feature_vals[ft_cnt][2] = np.float64(leaf[1])
-            ft_cnt += 1
+@jit(nopython=True)
+def detect(gray_image, base_scale, sqsat, x, y, scale_inc, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles):
+    width = gray_image.shape[1]
+    height = gray_image.shape[0]
+    max_scale = min(np.float(width)/x, np.float(height)/y)
 
-    rect_counts = np.empty(num_features + 1, dtype=np.int16)
+    scale = base_scale
+    while scale < max_scale:
+        size_x, size_y = np.int16(scale*gray_image.shape[1]), np.int16(scale*gray_image.shape[0])
+        while i < gray_image.shape[1] - size_x:
+            while j < gray_image.shape[0] - size_y:
 
-    rect_counts[0] = 0
-    for ft_idx, feature in enumerate(features):
-        rect_count = len(feature.find('rects'))
-        rect_counts[ft_idx + 1] = rect_counts[ft_idx] + np.int16(rect_count)
-
-    rectangles = np.empty((rect_counts[-1], 5), np.int8)
-
-    rect_cnt = 0
-    for feature in features:
-        rects = feature.find('rects')
-        for rect in rects:
-            rect_vals = rect.text.split()
-            rectangles[rect_cnt][0] = np.int8(rect_vals[0])
-            rectangles[rect_cnt][1] = np.int8(rect_vals[1])
-            rectangles[rect_cnt][2] = np.int8(rect_vals[2])
-            rectangles[rect_cnt][3] = np.int8(rect_vals[3])
-            rectangles[rect_cnt][4] = np.int8(rect_vals[4][:-1])
-            rect_cnt += 1
-
-    return (window_size, stage_thresholds, tree_counts, 
-            feature_vals, rect_counts, rectangles)
+    
+                j+=step
+            i+=step
+        scale *= scale_inc
+    
+    
+    return faces
 
 def main():
     # Read arguments
-    if len(sys.argv) != 3:
-        print('python sequential.py INPUT OUTPUT')
+    if len(sys.argv) != 4:
+        print('python sequential.py MODEL INPUT OUTPUT')
         sys.exit(1)
-    ifname = sys.argv[1]
-    ofname = sys.argv[2]
+    mfname = sys.argv[1]
+    ifname = sys.argv[2]
+    ofname = sys.argv[3]
+ 
+    #Load Haar Cascade model
+    model = load_model(mfname)
  
     # Read image
     img = cv.imread(ifname)
+    height, width = img.shape[:-1]
  
     # Convert image to grayscale
-    gray_img = np.empty((img.shape[0], img.shape[1]), dtype=img.dtype)
+    gray_img = np.empty((height, width), dtype=img.dtype)
     convert_rgb2gray(img, gray_img)
     test_convert_rgb2gray(img, gray_img)
  
-    # Calculate summed area table
-    sat = np.empty(gray_img.shape, dtype=np.int64)
-    calculate_sat(gray_img, sat)
+    # Calculate Summed Area Table (SAT) and squared SAT
+    sat = np.empty((height + 1, width + 1), dtype=np.int64)
+    sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
+    calculate_sat(gray_img, sat, sqsat)
     test_calculate_sat(gray_img, sat)
+    test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
  
     # Write image
     cv.imwrite(ofname, gray_img)
 
+    window_size, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles = model
+
+    # print(tree_counts, len(tree_counts))
+   
+    where = get_left_or_right(gray_img, sqsat, 0, 0, window_size[0], window_size[1], 2, 1, feature_vals, rect_counts, rectangles)
+    print("where: ", where)
+
+    value = get_val(gray_img, 0, 0, window_size[0],window_size[1], 2, sqsat,1, feature_vals, rect_counts, rectangles)
+    print("value: ", value)
+
+    passed = check_passed(gray_img, 0, 0, window_size[0], window_size[1], 2, sqsat, feature_vals, rect_counts, rectangles, tree_counts, stage_thresholds, 0)
+    print("passed: ", passed)
+
+    faces = detect(gray_img, 2, sqsat, window_size[0], window_size[1], 2, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles)
+    print("faces:", faces)
 # Execute
 main()
