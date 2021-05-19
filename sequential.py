@@ -257,6 +257,62 @@ def detect(gray_image, model, sat, sqsat, scale_inc):
 
     return face_list
 
+@jit(nopython=True)
+def equals(r1, r2):
+    distance = np.int16(r1[2]*0.2)
+    if r2[0] <= r1[0] + distance and \
+        r2[0] >= r1[0] - distance and \
+        r2[1] <= r1[1] + distance and \
+        r2[1] >= r1[1] - distance and \
+        r2[2] <= np.int16( r1[2] * 1.2 ) and \
+        np.int16( r2[2] * 1.2) >= r1[2]:
+        return True
+
+    if r1[0] >= r2[0] and r1[0] + r1[2] <= r2[0] + r2[2] and \
+         r1[1] >= r2[1] and r1[1] + r1[3] <= r2[1] + r2[3]:
+        return True
+    return False
+
+@jit(nopython=True)
+def merge(rects, threshold):
+    retour = []
+    rects_size = rects.shape[0]
+    ret = np.empty(rects_size, dtype = np.int16)
+    nb_classes = 0
+    for i in range(rects_size):
+        found = False
+        for j in range(i):
+            if equals(rects[j], rects[i]):
+                found = True
+                ret[i] = ret[j]
+        if not found:
+            ret[i] = nb_classes
+            nb_classes += 1
+    
+    neighbors = np.empty(nb_classes)
+    rect = np.empty((nb_classes, 4), dtype = np.int32)
+    for i in range(nb_classes):
+        neighbors[i] = 0
+        rect[i] = np.array([0, 0, 0, 0])
+
+    for i in range(rects_size):
+        neighbors[ret[i]] += 1
+        rect[ret[i]][0] += rects[i][0]
+        rect[ret[i]][1] += rects[i][1]
+        rect[ret[i]][2] += rects[i][2]
+        rect[ret[i]][3] += rects[i][3]
+
+    for idx in range(nb_classes):
+        n = neighbors[idx]
+        if n >= threshold:
+            r = np.array([0, 0, 0, 0], dtype = np.int16)
+            r[0] = (rect[idx][0]*2 + n)/(2*n)
+            r[1] = (rect[idx][1]*2 + n)/(2*n)
+            r[2] = (rect[idx][2]*2 + n)/(2*n)
+            r[3] = (rect[idx][3]*2 + n)/(2*n)
+            retour.append(r)
+    return retour
+
 
 def main():
     # Read arguments
@@ -300,7 +356,19 @@ def main():
 
     face_list = detect(gray_img, model, sat, sqsat, 1.5)
     print("face_list:", face_list)
-    
+
+
+    color = (255, 0, 0)
+    thickness = 1
+    stock_img = img.copy()
+    merged_result = merge(face_list, 3)
+    print(merged_result)
+    for rect in merged_result:
+        start_point = (rect[0], rect[1])
+        end_point = (rect[0] + rect[2], rect[1] + rect[3])
+        stock_img = cv.rectangle(stock_img, start_point, end_point, color, thickness)
+
+    cv.imwrite(ofname, stock_img)
     
 # Execute
 main()
