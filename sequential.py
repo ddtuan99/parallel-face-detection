@@ -182,37 +182,29 @@ def test_calculate_sat(img, sat):
 decide to turn left or right
 return value is 0 or 1, respective to LEFT or RIGHT
 '''
-@jit(nopython=True)
-def get_left_or_right(gray_image, sqsat, i, j, x, y, scale, feature_id, feature_vals, rect_counts, rectangles):
-    w = np.int16(scale + x)
-    h = np.int16(scale + y)
-    inv_area = np.double(1.0/(w*h))
-    total_x = gray_image[i + h][j + w]+ gray_image[i][j] - gray_image[i][j + w] - gray_image[i + h][j]
-    total_x2 = sqsat[i + h][j + w] + sqsat[i][j] - sqsat[i][j + w] - sqsat[i + h][j]
-    moy = np.double(total_x*inv_area)
-    vnorm = np.double(total_x2*inv_area-moy*moy)
-    vnorm = math.sqrt(vnorm) if vnorm > 1 else 1
-    
-    rect_sum = 0
-    curr_rect_count = rect_counts[feature_id+1]-rect_counts[feature_id]
-    for i in range(curr_rect_count):
-        r = rectangles[feature_id+i]
-        rx1 = np.int16(i + scale*r[0])
-        rx2 = np.int16(i + scale*(r[0]+r[1]))
-        ry1 = np.int16(j + scale*(r[0]+r[2]))
-        ry2 = np.int16(j + scale*(r[0]+r[2]+r[1]+r[3]))
-        rect_sum += np.int16((gray_image[rx2][ry2]-gray_image[rx1][ry2]-gray_image[rx2][ry1]+gray_image[rx1][ry1])*r[4])
-    rect_sum2 = np.double(rect_sum*inv_area)
-    threshold = feature_vals[feature_id][0]
-    return 0 if rect_sum2 < threshold*vnorm else 1
 
 @jit(nopython=True)
-def get_val(gray_image, i, j, x,y, scale, sqsat,feature_id, feature_vals, rect_counts, rectangles):  
-    where = get_left_or_right(gray_image, sqsat, i, j, x, y, scale, feature_id, feature_vals, rect_counts, rectangles)
-    if where == 0:
-        return feature_vals[feature_id][1]
-    else: 
-        return feature_vals[feature_id][2]
+def get_left_or_right(x, y, gray_img, sqsat, i, j, feature_id, feature_vals, rect_counts, rectangles, scale):
+    w, h = int(scale*x), int(scale*y)
+    inv_area = 1/(w*h)
+    total_x = gray_img[i + h][j + w]+ gray_img[i][j] - gray_img[i][j + w] - gray_img[i + h][j]
+    total_x2 = sqsat[i + h][j + w] + sqsat[i][j] - sqsat[i][j + w] - sqsat[i + h][j]
+    moy = total_x * inv_area
+    vnorm = total_x2 * inv_area - moy * moy
+    vnorm = math.sqrt(vnorm) if vnorm > 1 else 1
+        
+    rect_sum = 0
+    for rect_id in range(rect_counts[feature_id], rect_counts[feature_id + 1]):
+        r = rectangles[rect_id]
+        rx1 = j + np.int16(scale*r[0])
+        rx2 = j + np.int16(scale*(r[2] + r[0]))
+        ry1 = i + np.int16(scale*r[1])
+        ry2 = i + np.int16(scale*(r[3] + r[1]))
+        rect_sum += np.int32((gray_img[ry2][rx2] - gray_img[ry2][rx1] - gray_img[ry1][rx2] + gray_img[ry1][rx1])*r[4])
+
+    rect_sum2 = np.float(rect_sum)*inv_area
+    threshold = feature_vals[0]
+    return feature_vals[1] if rect_sum2 < threshold*vnorm else feature_vals[2]
 
 '''
 
@@ -221,44 +213,62 @@ else it fails (the window is not the object looked for).
 
 '''
 @jit(nopython=True)
-def check_passed(gray_image, i, j, x,y, scale, sqsat, feature_vals, rect_counts, rectangles, tree_counts, stage_thresholds, stage_thresholds_id):
+def check_passed(i, j, model, sat, sqsat, stage_thresholds_id,scale):
+    window_size, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles = model
     sum = 0
-    tree_nb = tree_counts[stage_thresholds_id+1]-tree_counts[stage_thresholds_id]
-    for feature_id in range(tree_nb):
-        sum+=get_val(gray_image, i, j, x,y, scale, sqsat,feature_id, feature_vals, rect_counts, rectangles)
+    for feature_id in range(tree_counts[stage_thresholds_id],tree_counts[stage_thresholds_id+1]):
+        sum += get_left_or_right(window_size[0], window_size[1], sat, sqsat, i, j, feature_id, feature_vals[feature_id], rect_counts, rectangles,scale)
+
     return sum>stage_thresholds[stage_thresholds_id]
+        
 
 @jit(nopython=True)
-def detect(gray_image, base_scale, sqsat, x, y, scale_inc, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles):
+def detect(gray_image, model, sat, sqsat, scale_inc):
+    window_size, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles = model
+    face_list = np.empty((0, 4), np.int32)
     width = gray_image.shape[1]
     height = gray_image.shape[0]
-    max_scale = min(np.float(width)/x, np.float(height)/y)
+    max_scale = min(np.float(width)/window_size[0], np.float(height)/window_size[1])
+    print("max_scale: ", max_scale)
 
-    scale = base_scale
+    scale = 1.0
     while scale < max_scale:
-        size_x, size_y = np.int16(scale*gray_image.shape[1]), np.int16(scale*gray_image.shape[0])
-        while i < gray_image.shape[1] - size_x:
-            while j < gray_image.shape[0] - size_y:
+        size_x, size_y = np.int16(scale*window_size[0]), np.int16(scale*window_size[1])
+        step = 1
+        i = 0
+        while i < height - size_y:
+            j = 0
+            while j < width - size_x:
+                passed = True
+                for stage_thresholds_id in range(len(stage_thresholds)):
+                    if not check_passed(i, j, model, sat, sqsat, stage_thresholds_id,scale):
+                        passed = False
+                        break
+                
+                if passed:
+                    print("Passed!")
+                    # face_list.append([j,j,size_x,size_y])
+                    face_list = np.append(face_list, np.array([[j, i, size_x, size_y]], dtype = np.int16), axis = 0)
 
-    
-                j+=step
-            i+=step
+                j += step
+            i += step
         scale *= scale_inc
     
-    
-    return faces
+
+    return face_list
+
 
 def main():
     # Read arguments
-    if len(sys.argv) != 4:
-        print('python sequential.py MODEL INPUT OUTPUT')
+    if len(sys.argv) != 3:
+        print('python sequential.py INPUT OUTPUT')
         sys.exit(1)
-    mfname = sys.argv[1]
-    ifname = sys.argv[2]
-    ofname = sys.argv[3]
+    # mfname = sys.argv[1]
+    ifname = sys.argv[1]
+    ofname = sys.argv[2]
  
     #Load Haar Cascade model
-    model = load_model(mfname)
+    model = load_model('haarcascade_frontalface_default.xml')
  
     # Read image
     img = cv.imread(ifname)
@@ -281,18 +291,16 @@ def main():
 
     window_size, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles = model
 
-    # print(tree_counts, len(tree_counts))
-   
-    where = get_left_or_right(gray_img, sqsat, 0, 0, window_size[0], window_size[1], 2, 1, feature_vals, rect_counts, rectangles)
-    print("where: ", where)
+    # print(feature_vals)
 
-    value = get_val(gray_img, 0, 0, window_size[0],window_size[1], 2, sqsat,1, feature_vals, rect_counts, rectangles)
-    print("value: ", value)
+    # value = get_left_or_right(window_size[0], window_size[1], gray_img, sqsat, 0, 0, 0, feature_vals, rect_counts, rectangles, 1.5)
+    # print(value)
 
-    passed = check_passed(gray_img, 0, 0, window_size[0], window_size[1], 2, sqsat, feature_vals, rect_counts, rectangles, tree_counts, stage_thresholds, 0)
-    print("passed: ", passed)
+    # passed = check_passed(0, 0, window_size[0], window_size[1], 2, sat, sqsat, feature_vals, rect_counts, rectangles, tree_counts, stage_thresholds, 0)
 
-    faces = detect(gray_img, 2, sqsat, window_size[0], window_size[1], 2, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles)
-    print("faces:", faces)
+    face_list = detect(gray_img, model, sat, sqsat, 1.5)
+    print("face_list:", face_list)
+    
+    
 # Execute
 main()
