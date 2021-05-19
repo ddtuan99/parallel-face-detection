@@ -1,9 +1,11 @@
+from re import T
 import sys
 from numpy.core.arrayprint import set_string_function
 
 from numpy.lib.function_base import append
 import cv2 as cv
 import numpy as np
+from numba.typed import List
 from numba import jit
 import xml.etree.ElementTree as ET
 import time
@@ -115,8 +117,8 @@ def load_model(file_name):
     stages = cascade.find('stages')
     features = cascade.find('features')
 
-    window_size = (int(cascade.find('width').text), 
-                   int(cascade.find('height').text))
+    window_size = np.array([int(cascade.find('width').text), 
+                   int(cascade.find('height').text)])
 
     num_stages = len(stages)
     num_features = len(features)
@@ -165,74 +167,89 @@ def load_model(file_name):
     return (window_size, stage_thresholds, tree_counts, 
             feature_vals, rect_counts, rectangles)
 
+
 @jit(nopython=True)
-def evalute_features(wd_size, gray_img, sqsat, i, j, ftr_index, ftr_vals, rect_counts, rects, scale):
-
-    w, h = int(scale*wd_size[0]), int(scale*wd_size[1])
-    inv_area=1./(w*h)
-
-    '''Compute the sum (and squared sum) of the pixel values in the window, and get the mean and variance of pixel values
-	    in the window.
+def evalute_features(sat, pos, ftr_index, rect_counts, rects, scale):
     '''
-    sum = gray_img[i + h][j + w]+ gray_img[i][j] - gray_img[i][j + w] - gray_img[i + h][j]
-    squared_sum = sqsat[i + h][j + w] + sqsat[i][j] - sqsat[i][j + w] - sqsat[i + h][j]
-    moy = sum * inv_area
-    vnorm = squared_sum * inv_area - moy * moy
-    if vnorm > 1:
-        vnorm = math.sqrt(vnorm) 
-    else:
-        vnorm = 1
-    
-    rect_sum = 0
-	# For each rectangle in the feature
+    Compute the sum (and squared sum) of the pixel values in the window, and get the mean and variance of pixel values
+	in the window.
+    '''
+    i, j = pos
+    rect_sum = 0.0
+    # Each feature consists of 2 or 3 rectangle.
+    # For each rectangle in the feature
     for idx in range(rect_counts[ftr_index], rect_counts[ftr_index + 1]):
-        rx1 = np.int16(scale*rects[idx][0]) + j
-        rx2 = np.int16(scale*(rects[idx][2] + rects[idx][0])) + j
-        ry1 = np.int16(scale*rects[idx][1]) + i
-        ry2 = np.int16(scale*(rects[idx][3] + rects[idx][1])) + i
+        rx1 = np.int32(scale*rects[idx][0]) + j
+        rx2 = np.int32(scale*(rects[idx][2] + rects[idx][0])) + j
+        ry1 = np.int32(scale*rects[idx][1]) + i
+        ry2 = np.int32(scale*(rects[idx][3] + rects[idx][1])) + i
         # Add the sum of pixel values in the rectangles (weighted by the rectangle's weight) to the total sum 
-        rect_sum += np.int32((gray_img[ry2][rx2] - gray_img[ry2][rx1] - gray_img[ry1][rx2] + gray_img[ry1][rx1])*rects[idx][4])
+        rect_sum += np.double(sat[ry2][rx2] - sat[ry2][rx1] - sat[ry1][rx2] + sat[ry1][rx1])*rects[idx][4]
 
-    rect_sum2 = np.float(rect_sum)*inv_area
-    if (rect_sum2 < ftr_vals[0]*vnorm):
-        return ftr_vals[1]
-    else:
-        return ftr_vals[2]
+    return rect_sum
+
+@jit(nopython = True)
+def stage_pass(base_wd_size, stage, tree_counts, sats, ftr_vals, rect_counts, rects, pos, scale):
+    ftr_sum = 0.0
+    w, h = int(scale*base_wd_size[0]), int(scale*base_wd_size[1])
+    inv_area=1.0 / (w*h)
+    stg_index, threshold = stage
+    sat, sqsat = sats
+    i, j = pos
+
+    sat_sum = sat[i + h][j + w] + sat[i][j] - sat[i][j + w] - sat[i + h][j]
+    squared_sum = sqsat[i + h][j + w] + sqsat[i][j] - sqsat[i][j + w] - sqsat[i + h][j]
+    mean = sat_sum * inv_area
+    variance = squared_sum * inv_area - np.double(mean) * mean
+
+    vnorm = np.sqrt(variance)
+
+    for ftr_index in range(tree_counts[stg_index], tree_counts[stg_index + 1]):
+        # Implement stump-base decision tree (tree has one feature) for now.
+        rect_sum = evalute_features(sat, (i, j), ftr_index, rect_counts, rects, scale)
+
+        # threshold > rect_sum/(area*vnorm) ? left : right
+        rect_sum2 = rect_sum*inv_area
+        if (rect_sum2 < ftr_vals[ftr_index][0]*vnorm):
+            ftr_sum += ftr_vals[ftr_index][1]
+        else:
+            ftr_sum += ftr_vals[ftr_index][2]
+    if ftr_sum < threshold:
+        return False
+
+    return True
 
 @jit(nopython=True)
-def detect_multi_scale(gray_img, sat, sqsat, wd_size, stg_threshold, tree_counts, ftr_vals, rect_counts, rects, result):
+def detect_multi_scale(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals, rect_counts, rects, shift_ratio = 0.1):
     # Slide the detector window
-    width, height = len(gray_img[0]), len(gray_img)
-    max_scale = min([np.float(width)/wd_size[0], np.float(height)/wd_size[1]])
-    scale_inc = 1.5
-    scale = np.float(1)
+    width, height = len(sat[0]), len(sat)
+    max_scale = min([width/wd_size[0], height/wd_size[1]])
+    scale_inc = 1.1
+    scale = 1.0
+    result = List()
 
     while scale < max_scale:
-        print(scale)
+        cur_wd_size = (scale*wd_size).astype(np.int32)
+        step = (cur_wd_size*shift_ratio).astype(np.int32)
         # Compute the sliding step of the window
-        for i in range(len(gray_img) - np.int16(scale*wd_size[1])):
-            for j in range(len(gray_img[0]) - np.int16(scale*wd_size[0])):
+        for i in range(1, height - cur_wd_size[1], step[1]):
+            for j in range(1, width - cur_wd_size[0], step[0]):
                 accepted = True
-                sum = 0
-                for stg_index, threshold in enumerate(stg_threshold):
-                    for ftr_index in range(tree_counts[stg_index], tree_counts[stg_index + 1]):
-                        sum += evalute_features(wd_size, sat, sqsat, i, j, ftr_index, ftr_vals[ftr_index], rect_counts, rects, scale)
-
-                    if sum < threshold:
+                for stg_idx, threshold in enumerate(stg_threshold):
+                    if not stage_pass(wd_size, (stg_idx, threshold), tree_counts, (sat, sqsat), ftr_vals, rect_counts, rects, (i, j), scale):
                         accepted = False
                         break
-
+                    
                 if accepted == True:
-                    h, w = np.int16(scale*wd_size[1]), np.int16(scale*wd_size[0])
-                    result = np.append(result, np.array([[j, i, w, h]], dtype = np.int16), axis = 0)
-
+                    result.append([j, i, int(cur_wd_size[0]), int(cur_wd_size[1])])
+    
         scale *= scale_inc
     return result
     
 @jit(nopython=True)
 def merge(rects, threshold):
-    retour = []
-    ret = np.empty(rects.shape[0], dtype = np.int16)
+    retour = List()
+    ret = np.empty(len(rects), dtype = np.int32)
     nb_classes = 0
     for i in range(len(rects)):
         found = False
@@ -243,7 +260,6 @@ def merge(rects, threshold):
         if found == False:
             ret[i] = nb_classes
             nb_classes += 1
-    
     neighbors = np.empty(nb_classes)
     rect = np.empty((nb_classes, 4), dtype = np.int32)
     for idx in range(nb_classes):
@@ -260,7 +276,7 @@ def merge(rects, threshold):
     for idx in range(nb_classes):
         n = neighbors[idx]
         if n >= threshold:
-            r = np.array([0, 0, 0, 0], dtype = np.int16)
+            r = np.array([0, 0, 0, 0], dtype = np.int32)
             r[0] = (rect[idx][0]*2 + n)/(2*n)
             r[1] = (rect[idx][1]*2 + n)/(2*n)
             r[2] = (rect[idx][2]*2 + n)/(2*n)
@@ -270,24 +286,25 @@ def merge(rects, threshold):
 
 @jit(nopython=True)
 def equals(r1, r2):
-    distance = np.int16(r1[2]*0.2)
+    distance = np.int32(r1[2]*0.2)
     if r2[0] <= r1[0] + distance and r2[0] >= r1[0] - distance and \
                 r2[1] <= r1[1] + distance and \
                 r2[1] >= r1[1] - distance and \
-                r2[2] <= np.int16( r1[2] * 1.2 ) and \
-                np.int16( r2[2] * 1.2) >= r1[2]:
+                r2[2] <= np.int32( r1[2] * 1.2 ) and \
+                np.int32( r2[2] * 1.2) >= r1[2]:
                     return True
     if r1[0] >= r2[0] and r1[0] + r1[2] <= r2[0] + r2[2] and r1[1] >= r2[1] and r1[1] + r1[3] <= r2[1] + r2[3]:
-        return True
+        return True    
     return False
 
 def main():
     # Read arguments
-    # if len(sys.argv) != 3:
-    #     print('python sequential.py INPUT OUTPUT')
-    ifname = 'test4.jpg'
-    ofname = 'result_test4.jpg'
-    # ofname = sys.argv[2]
+    if len(sys.argv) != 4:
+        print('python sequential.py MODEL INPUT OUTPUT')
+        sys.exit(1)
+    mfname = sys.argv[1]
+    ifname = sys.argv[2]
+    ofname = sys.argv[3]
  
     # Read image
     img = cv.imread(ifname)
@@ -306,17 +323,21 @@ def main():
     test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
 
     # Load model
-    wd_size, stg_threshold, tree_counts, ftr_vals, rect_counts, rects = load_model('haarcascade_frontalface_default.xml')
-    result = np.empty((0, 4), np.int32)
+    wd_size, stg_threshold, tree_counts, ftr_vals, rect_counts, rects = load_model(mfname)
 
+    shift_ratio = 0.05
     start = time.time()
-    result = detect_multi_scale(gray_img, sat, sqsat, wd_size, stg_threshold, tree_counts, ftr_vals, rect_counts, rects, result)
+    result = detect_multi_scale(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals, rect_counts, rects, shift_ratio)
     end = time.time()
     print("Time: " + str(end - start))
+    # result = [tuple(r) for r in result]
+    # merged_result = cv.groupRectangles(result, 3)[0]
 
-    merged_result = merge(result, 10)
-    color = (255, 0, 0)
-    thickness = 1
+    result = np.array(result)
+    merged_result = merge(result, 4)
+
+    color = (255, 255, 255)
+    thickness = 2
     detected_img = img.copy()
 
     for rect in merged_result:
