@@ -1,4 +1,3 @@
-from re import T
 import sys
 from numpy.core.arrayprint import set_string_function
 
@@ -88,25 +87,19 @@ def test_calculate_sat(img, sat):
 def load_model(file_name):
     '''
     Loads a classifier from a file
-
     filename: Name of the file from which the classifier is loaded
-
     stage_thresholds: numpy.ndarray with shape=(nStages)
                     nStages is number of stage used in the classifier
                     threshold of each stage to check if whether should we proceed to the next stage or not
-
     tree_counts: numpy.ndarray with shape=(nStages + 1) 
                 tree_counts[i] contains number of tree/feature before stage i or index of the first tree of stage i,
                 so range(tree_counts[i], tree_counts[i + 1]) will gives all tree's index of stage i
-
     feature_vals: numpy.ndarray with shape(nFeatures, 3)
                 nFeatures is total number of features used in the classifier
                 Contains (threshold, left_val, right_val) of each features, each feature correspond to a tree with the same index
-
     rectangles: numpy.ndarray with shape(nRectangles, 5)
                 nRectangles is total number of rectangles used for features in the classifier
                 Contains (x_topleft, y_topleft, width, height, weight) of each rectangle
-
     rect_counts: numpy.ndarray with shape(nFeatures + 1)
                 A feature consists of 2 or 3 rectangles. rect_counts[i] is the index of first rectangle of feature i,
                 so range(rect_counts[i], rect_counts[i + 1]) give all rectangle's index (in rectangles array) of feature i
@@ -190,6 +183,10 @@ def evalute_features(sat, pos, ftr_index, rect_counts, rects, scale):
 
 @jit(nopython = True)
 def stage_pass(base_wd_size, stage, tree_counts, sats, ftr_vals, rect_counts, rects, pos, scale):
+    '''
+    Calculate sum of a stage by iterating features of the stage.
+    The sum then used to compare with stage threshold to return the corresponded node value.
+    '''
     ftr_sum = 0.0
     w, h = int(scale*base_wd_size[0]), int(scale*base_wd_size[1])
     inv_area=1.0 / (w*h)
@@ -214,6 +211,7 @@ def stage_pass(base_wd_size, stage, tree_counts, sats, ftr_vals, rect_counts, re
             ftr_sum += ftr_vals[ftr_index][1]
         else:
             ftr_sum += ftr_vals[ftr_index][2]
+
     if ftr_sum < threshold:
         return False
 
@@ -248,6 +246,10 @@ def detect_multi_scale(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals
     
 @jit(nopython=True)
 def merge(rects, threshold):
+    '''
+    Merged multiple rectanges that may contain faces into groups and form new rectangles from those group.
+    Groups with number of neighbor higher than threshold will be kept.
+    '''
     retour = List()
     ret = np.empty(len(rects), dtype = np.int32)
     nb_classes = 0
@@ -286,6 +288,9 @@ def merge(rects, threshold):
 
 @jit(nopython=True)
 def equals(r1, r2):
+    '''
+    Check if two rectanges are near eachother of contain eachother in order to group those rectangles
+    '''
     distance = np.int32(r1[2]*0.2)
     if r2[0] <= r1[0] + distance and r2[0] >= r1[0] - distance and \
                 r2[1] <= r1[1] + distance and \
@@ -334,7 +339,7 @@ def main():
     # merged_result = cv.groupRectangles(result, 3)[0]
 
     result = np.array(result)
-    merged_result = merge(result, 4)
+    merged_result = merge(result, 0)
 
     color = (255, 255, 255)
     thickness = 2
