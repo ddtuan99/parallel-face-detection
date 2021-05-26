@@ -178,14 +178,16 @@ def test_calculate_sat(img, sat):
     assert(total == sat_np[-1, -1])
     assert(np.array_equal(sat[1:, 1:], sat_np))
  
-'''
-decide to turn left or right
-return value is 0 or 1, respective to LEFT or RIGHT
-'''
 
 @jit(nopython=True)
-def get_left_or_right(x, y, gray_img, sqsat, i, j, feature_id, feature_vals, rect_counts, rectangles, scale):
-    w, h = int(scale*x), int(scale*y)
+def get_left_or_right(window_size, gray_img, sqsat, i, j, feature_id, feature_vals,rect_counts, rectangles, scale):
+    '''
+    Decide to turn left or right
+    Return value is 0 or 1, respective to LEFT or RIGHT
+    
+    '''
+
+    w, h = int(scale*window_size[0]), int(scale*window_size[1])
     inv_area = 1/(w*h)
     total_x = gray_img[i + h][j + w]+ gray_img[i][j] - gray_img[i][j + w] - gray_img[i + h][j]
     total_x2 = sqsat[i + h][j + w] + sqsat[i][j] - sqsat[i][j + w] - sqsat[i + h][j]
@@ -206,18 +208,19 @@ def get_left_or_right(x, y, gray_img, sqsat, i, j, feature_id, feature_vals, rec
     threshold = feature_vals[0]
     return feature_vals[1] if rect_sum2 < threshold*vnorm else feature_vals[2]
 
-'''
 
-If the sum of these values exceeds the threshold, the stage passes
-else it fails (the window is not the object looked for).
-
-'''
 @jit(nopython=True)
 def check_passed(i, j, model, sat, sqsat, stage_thresholds_id,scale):
+    '''
+
+    If the sum of these values exceeds the threshold, the stage passes
+    else it fails (the window is not the object looked for).
+
+    '''
     window_size, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles = model
     sum = 0
     for feature_id in range(tree_counts[stage_thresholds_id],tree_counts[stage_thresholds_id+1]):
-        sum += get_left_or_right(window_size[0], window_size[1], sat, sqsat, i, j, feature_id, feature_vals[feature_id], rect_counts, rectangles,scale)
+        sum += get_left_or_right(window_size, sat, sqsat, i, j, feature_id, feature_vals[feature_id], rect_counts, rectangles, scale)
 
     return sum>stage_thresholds[stage_thresholds_id]
         
@@ -313,13 +316,41 @@ def merge(rects, threshold):
             retour.append(r)
     return retour
 
+def draw(merge_img, color, thickness, out_img):
+    for rect in merge_img:
+        start_point = (rect[0], rect[1])
+        end_point = (rect[0] + rect[2], rect[1] + rect[3])
+        out_img = cv.rectangle(out_img, start_point, end_point, color, thickness)
 
+def run(model, in_img, out_img):
+    height, width = in_img.shape[:-1]
+
+    # Convert to grayscale
+    gray_img = np.empty((height, width), dtype=in_img.dtype)
+    convert_rgb2gray(in_img, gray_img)
+
+    # Calculate Summed Area Table (SAT) and squared SAT
+    sat = np.empty((height + 1, width + 1), dtype=np.int64)
+    sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
+    calculate_sat(gray_img, sat, sqsat)
+
+    # Detect
+    face_list = detect(gray_img, model, sat, sqsat, 1.5)
+
+    # Merge
+    merged_img = merge(face_list, 3)
+
+    color = (0, 255, 0)
+    thickness = 2
+
+    # Draw box
+    draw(merged_img, color, thickness, out_img)
+    
 def main():
     # Read arguments
     if len(sys.argv) != 3:
         print('python sequential.py INPUT OUTPUT')
         sys.exit(1)
-    # mfname = sys.argv[1]
     ifname = sys.argv[1]
     ofname = sys.argv[2]
  
@@ -327,48 +358,15 @@ def main():
     model = load_model('haarcascade_frontalface_default.xml')
  
     # Read image
-    img = cv.imread(ifname)
-    height, width = img.shape[:-1]
+    in_img = cv.imread(ifname)
  
-    # Convert image to grayscale
-    gray_img = np.empty((height, width), dtype=img.dtype)
-    convert_rgb2gray(img, gray_img)
-    test_convert_rgb2gray(img, gray_img)
- 
-    # Calculate Summed Area Table (SAT) and squared SAT
-    sat = np.empty((height + 1, width + 1), dtype=np.int64)
-    sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
-    calculate_sat(gray_img, sat, sqsat)
-    test_calculate_sat(gray_img, sat)
-    test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
- 
+    out_img = in_img.copy()
+
+    # Run 
+    run(model,in_img,out_img)
+
     # Write image
-    cv.imwrite(ofname, gray_img)
-
-    window_size, stage_thresholds, tree_counts, feature_vals, rect_counts, rectangles = model
-
-    # print(feature_vals)
-
-    # value = get_left_or_right(window_size[0], window_size[1], gray_img, sqsat, 0, 0, 0, feature_vals, rect_counts, rectangles, 1.5)
-    # print(value)
-
-    # passed = check_passed(0, 0, window_size[0], window_size[1], 2, sat, sqsat, feature_vals, rect_counts, rectangles, tree_counts, stage_thresholds, 0)
-
-    face_list = detect(gray_img, model, sat, sqsat, 1.5)
-    print("face_list:", face_list)
-
-
-    color = (255, 0, 0)
-    thickness = 1
-    stock_img = img.copy()
-    merged_result = merge(face_list, 3)
-    print(merged_result)
-    for rect in merged_result:
-        start_point = (rect[0], rect[1])
-        end_point = (rect[0] + rect[2], rect[1] + rect[3])
-        stock_img = cv.rectangle(stock_img, start_point, end_point, color, thickness)
-
-    cv.imwrite(ofname, stock_img)
+    cv.imwrite(ofname, out_img)
     
 # Execute
 main()
