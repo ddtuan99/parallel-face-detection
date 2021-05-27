@@ -422,4 +422,4 @@ def main(_argv):
 
 
 # Execute
-main()
+main(None)
