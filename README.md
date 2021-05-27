@@ -85,11 +85,33 @@
   <tr>
     <td rowspan="2">5</td>
     <td>12/5-18/5</td>
-    <td colspan="3">- Hoàn thành code Cài đặt tuần tự của ứng dụng<br>- Chỉnh sửa nội dung phần 2.1 Thiết kế và hoàn thành nội dung phần 2.2 Cài đặt tuần tự trong file báo cáo</td>
+    <td colspan="3">- Hoàn thành code Cài đặt tuần tự của ứng dụng<br>- Chỉnh sửa nội dung phần 2.1 Thiết kế và hoàn thành nội dung phần 2.2 Cài đặt tuần tự <br>trong file báo cáo</td>
     <td></td>
   </tr>
   <tr>
-    <td>19/5<br></td>
+    <td>19/5</td>
+    <td colspan="3">Họp nhóm: merge báo cáo và code</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td rowspan="2">6</td>
+    <td>20/5-27/5</td>
+    <td colspan="3">- Cải thiện khả năng nhận diện và độ lỗi trong code Cài đặt tuần tự<br>- Chỉnh sửa nội dung tronng file báo cáo</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>27/5</td>
+    <td colspan="3">Họp nhóm: merge code Cài đặt tuần tự đã được cải thiện và xác định hướng đi trong Cài đặt song song</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td rowspan="2">7</td>
+    <td>28/5-31/5</td>
+    <td colspan="3">- Cài đặt các hàm trong cài đặt song song<br>- Tổng hợp nội dung cài đặt song song vào file báo cáo</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>1/6</td>
     <td colspan="3">Họp nhóm: merge báo cáo và code</td>
     <td></td>
   </tr>
