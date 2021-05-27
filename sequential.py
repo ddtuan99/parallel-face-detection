@@ -167,60 +167,55 @@ def load_model(file_name):
     return (window_size, stage_thresholds, tree_counts, 
             feature_vals, rect_counts, rectangles)
 
+def run(img, model, shift_ratio = 0.1, scale_inc = 1.25, neighbor_threshold = 2):
+    '''
+    - Compute necessary parameters for detection algorithm 
+    - Run the algorithm with mandatory parameters and optional parameters from the users
+    - Merge result windows that may contain faces into the more reasonal result
+    - Draw result as bounding box in the source image copy 
+    '''
+    # Read image
+    img = cv.imread(img)
+    height, width = img.shape[:-1]
+ 
+    # Convert image to grayscale
+    gray_img = np.empty((height, width), dtype=img.dtype)
+    convert_rgb2gray(img, gray_img)
+    test_convert_rgb2gray(img, gray_img)
+ 
+    # Calculate Summed Area Table (SAT) and squared SAT
+    sat = np.empty((height + 1, width + 1), dtype=np.int64)
+    sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
+    calculate_sat(gray_img, sat, sqsat)
+    test_calculate_sat(gray_img, sat)
+    test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
+
+    result = detect_multi_scale(model, sat, sqsat, shift_ratio, scale_inc)
+
+    # Merge multiple rectangles that near or contain each other into one single rectangle
+
+    result = np.array(result)
+    merged_result = merge(result, neighbor_threshold)
+
+    # result = [tuple(r) for r in result]
+    # merged_result = cv.groupRectangles(result, 3)[0]
+
+    # Draw merged rectangles into copied source pictures
+    detected_img = img.copy()
+    draw_rects(detected_img, merged_result)
+    return detected_img
 
 @jit(nopython=True)
-def evalute_features(sat, pos, ftr_index, rect_counts, rects, scale):
+def detect_multi_scale(model, sat, sqsat, shift_ratio, scale_inc):
     '''
-    Compute the sum (and squared sum) of the pixel values in the window, and get the mean and variance of pixel values
-	in the window.
+    - Slide through each windows in source image and compute stage evaluation on each windows.
+    - The sliding windows will increase correspoding to scale_inc and cap at max_scale.
+    - The sliding windows will shift corresponding to shift_ratio.
+    - Accepted windows will be added into result list.
     '''
-    i, j = pos
-    rect_sum = 0.0
-    # Each feature consists of 2 or 3 rectangle.
-    # For each rectangle in the feature
-    for idx in range(rect_counts[ftr_index], rect_counts[ftr_index + 1]):
-        rx1 = np.int32(scale*rects[idx][0]) + j
-        rx2 = np.int32(scale*(rects[idx][2] + rects[idx][0])) + j
-        ry1 = np.int32(scale*rects[idx][1]) + i
-        ry2 = np.int32(scale*(rects[idx][3] + rects[idx][1])) + i
-        # Add the sum of pixel values in the rectangles (weighted by the rectangle's weight) to the total sum 
-        rect_sum += np.double(sat[ry2][rx2] - sat[ry2][rx1] - sat[ry1][rx2] + sat[ry1][rx1])*rects[idx][4]
+    # Get the model properties
+    wd_size, stg_threshold, tree_counts, ftr_vals, rect_counts, rects = model
 
-    return rect_sum
-
-@jit(nopython = True)
-def stage_pass(base_wd_size, stage, tree_counts, sats, ftr_vals, rect_counts, rects, pos, scale):
-    ftr_sum = 0.0
-    w, h = int(scale*base_wd_size[0]), int(scale*base_wd_size[1])
-    inv_area=1.0 / (w*h)
-    stg_index, threshold = stage
-    sat, sqsat = sats
-    i, j = pos
-
-    sat_sum = sat[i + h][j + w] + sat[i][j] - sat[i][j + w] - sat[i + h][j]
-    squared_sum = sqsat[i + h][j + w] + sqsat[i][j] - sqsat[i][j + w] - sqsat[i + h][j]
-    mean = sat_sum * inv_area
-    variance = squared_sum * inv_area - np.double(mean) * mean
-
-    vnorm = np.sqrt(variance)
-
-    for ftr_index in range(tree_counts[stg_index], tree_counts[stg_index + 1]):
-        # Implement stump-base decision tree (tree has one feature) for now.
-        rect_sum = evalute_features(sat, (i, j), ftr_index, rect_counts, rects, scale)
-
-        # threshold > rect_sum/(area*vnorm) ? left : right
-        rect_sum2 = rect_sum*inv_area
-        if (rect_sum2 < ftr_vals[ftr_index][0]*vnorm):
-            ftr_sum += ftr_vals[ftr_index][1]
-        else:
-            ftr_sum += ftr_vals[ftr_index][2]
-    if ftr_sum < threshold:
-        return False
-
-    return True
-
-@jit(nopython=True)
-def detect_multi_scale(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals, rect_counts, rects, shift_ratio = 0.1):
     # Slide the detector window
     width, height = len(sat[0]), len(sat)
     max_scale = min([width/wd_size[0], height/wd_size[1]])
@@ -245,6 +240,58 @@ def detect_multi_scale(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals
     
         scale *= scale_inc
     return result
+
+@jit(nopython = True)
+def stage_pass(base_wd_size, stage, tree_counts, sats, ftr_vals, rect_counts, rects, pos, scale):
+    ftr_sum = 0.0
+    w, h = int(scale*base_wd_size[0]), int(scale*base_wd_size[1])
+    inv_area = 1.0 / (w*h)
+    stg_index, threshold = stage
+    sat, sqsat = sats
+    i, j = pos
+
+    sat_sum = sat[i + h][j + w] + sat[i][j] - sat[i][j + w] - sat[i + h][j]
+    squared_sum = sqsat[i + h][j + w] + sqsat[i][j] - sqsat[i][j + w] - sqsat[i + h][j]
+    mean = sat_sum * inv_area
+    variance = squared_sum * inv_area - mean * mean
+
+    vnorm = np.sqrt(variance)
+
+    for ftr_index in range(tree_counts[stg_index], tree_counts[stg_index + 1]):
+        # Implement stump-base decision tree (tree has one feature) for now.
+        rect_sum = evalute_features(sat, (i, j), ftr_index, rect_counts, rects, scale)
+
+        # threshold > rect_sum/(area*vnorm) ? left : right
+        rect_sum2 = rect_sum*inv_area
+        if (rect_sum2 < ftr_vals[ftr_index][0]*vnorm):
+            ftr_sum += ftr_vals[ftr_index][1]
+        else:
+            ftr_sum += ftr_vals[ftr_index][2]
+    if ftr_sum < threshold:
+        return False
+
+    return True
+
+
+@jit(nopython=True)
+def evalute_features(sat, pos, ftr_index, rect_counts, rects, scale):
+    '''
+    Compute the sum (and squared sum) of the pixel values in the window, and get the mean and variance of pixel values
+	in the window.
+    '''
+    i, j = pos
+    rect_sum = 0.0
+    # Each feature consists of 2 or 3 rectangle.
+    # For each rectangle in the feature
+    for idx in range(rect_counts[ftr_index], rect_counts[ftr_index + 1]):
+        rx1 = np.int32(scale*rects[idx][0]) + j
+        rx2 = np.int32(scale*(rects[idx][2] + rects[idx][0])) + j
+        ry1 = np.int32(scale*rects[idx][1]) + i
+        ry2 = np.int32(scale*(rects[idx][3] + rects[idx][1])) + i
+        # Add the sum of pixel values in the rectangles (weighted by the rectangle's weight) to the total sum 
+        rect_sum += (sat[ry2][rx2] - sat[ry2][rx1] - sat[ry1][rx2] + sat[ry1][rx1])*rects[idx][4]
+
+    return rect_sum
     
 @jit(nopython=True)
 def merge(rects, threshold):
@@ -297,6 +344,15 @@ def equals(r1, r2):
         return True    
     return False
 
+def draw_rects(detected_img, rects):
+    color = (255, 255, 255)
+    thickness = 2
+
+    for rect in rects:
+        start_point = (rect[0], rect[1])
+        end_point = (rect[0] + rect[2], rect[1] + rect[3])
+        detected_img = cv.rectangle(detected_img, start_point, end_point, color, thickness)
+
 def main():
     # Read arguments
     if len(sys.argv) != 4:
@@ -305,48 +361,18 @@ def main():
     mfname = sys.argv[1]
     ifname = sys.argv[2]
     ofname = sys.argv[3]
- 
-    # Read image
-    img = cv.imread(ifname)
-    height, width = img.shape[:-1]
- 
-    # Convert image to grayscale
-    gray_img = np.empty((height, width), dtype=img.dtype)
-    convert_rgb2gray(img, gray_img)
-    test_convert_rgb2gray(img, gray_img)
- 
-    # Calculate Summed Area Table (SAT) and squared SAT
-    sat = np.empty((height + 1, width + 1), dtype=np.int64)
-    sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
-    calculate_sat(gray_img, sat, sqsat)
-    test_calculate_sat(gray_img, sat)
-    test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
 
     # Load model
-    wd_size, stg_threshold, tree_counts, ftr_vals, rect_counts, rects = load_model(mfname)
+    model = load_model(mfname)
 
-    shift_ratio = 0.05
+    # Run detect funtions
     start = time.time()
-    result = detect_multi_scale(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals, rect_counts, rects, shift_ratio)
+    result_img = run(ifname, model, 0.05, 1.1, 5)
     end = time.time()
-    print("Time: " + str(end - start))
-    # result = [tuple(r) for r in result]
-    # merged_result = cv.groupRectangles(result, 3)[0]
-
-    result = np.array(result)
-    merged_result = merge(result, 4)
-
-    color = (255, 255, 255)
-    thickness = 2
-    detected_img = img.copy()
-
-    for rect in merged_result:
-        start_point = (rect[0], rect[1])
-        end_point = (rect[0] + rect[2], rect[1] + rect[3])
-        detected_img = cv.rectangle(detected_img, start_point, end_point, color, thickness)
+    print(end-start)
 
     # Write image
-    cv.imwrite(ofname, detected_img)
+    cv.imwrite(ofname, result_img)
 
 # Execute
 main()
