@@ -4,6 +4,7 @@ import numpy as np
 from numba import jit, cuda
 import xml.etree.ElementTree as ET
 import math
+import time
  
 def load_model(file_name):
     '''
@@ -120,9 +121,13 @@ def convert_rgb2gray_kernel(in_pixels, out_pixels, width, height):
     c = cuda.blockIdx.y*cuda.blockDim.y+cuda.threadIdx.y
 
     if r<height and c<width:
-        out_pixels[r][c] = (0.114*in_pixels[r, c, 0] + 
-                            0.587*in_pixels[r, c, 1] + 
-                            0.299*in_pixels[r, c, 2])
+        curr_px = in_pixels[r,c]
+        # out_pixels[r][c] = (0.114*in_pixels[r, c, 0] + 
+        #                     0.587*in_pixels[r, c, 1] + 
+        #                     0.299*in_pixels[r, c, 2])
+        out_pixels[r][c] = (0.114*curr_px[0] + 
+                            0.587*curr_px[1] + 
+                            0.299*curr_px[2])
 
 def test_convert_rgb2gray_kernel(img, gray_img):
     '''
@@ -132,7 +137,7 @@ def test_convert_rgb2gray_kernel(img, gray_img):
     gray_img_np = (img @ [0.114, 0.587, 0.299]).astype(np.uint8)
     gray_img_cv = cv.cvtColor(img, code=cv.COLOR_BGR2GRAY)
  
-    print('Jitted vs Numpy  error:', 
+    print('Jitted vs Numpy error:', 
           np.mean(np.abs(gray_img.astype(np.int16) - gray_img_np)))
     print('Jitted vs Opencv error:', 
           np.mean(np.abs(gray_img.astype(np.int16) - gray_img_cv)))
@@ -168,7 +173,8 @@ def test_calculate_sat_kernel(img, sat):
     assert(total == sat[-1, -1])
     assert(total == sat_np[-1, -1])
     assert(np.array_equal(sat[1:, 1:], sat_np))
- 
+    print('Jitted vs Numpy error:', 
+          np.mean(np.abs(sat[1:,1:] - sat_np)))
 
 @jit(nopython=True)
 def get_left_or_right(window_size, gray_img, sqsat, i, j, feature_id, feature_vals,rect_counts, rectangles, scale):
@@ -321,14 +327,18 @@ def evaluate_convert_rgb2gray_kernel(in_img, block_size):
 
     # Set grid size and invoke kernel
     grid_size = ((height-1) // block_size[1]+1, (width-1) // block_size[0]+1)
+    start = time.time()
     convert_rgb2gray_kernel[grid_size,block_size](in_img,d_gray_img,width,height)
-
+    end = time.time()
     # Copy data to host
     gray_img = d_gray_img.copy_to_host().astype(in_img.dtype)
-    print(gray_img)
+
+    # print("Convert to grayscale kernel time:", end-start)
+
+    # print(gray_img)
 
     # Compute error
-    test_convert_rgb2gray_kernel(in_img,gray_img)
+    # test_convert_rgb2gray_kernel(in_img,gray_img)
 
     # Write image
     cv.imwrite("output.jpg", gray_img)
@@ -336,19 +346,25 @@ def evaluate_convert_rgb2gray_kernel(in_img, block_size):
     return gray_img
 
 def evaluate_calculate_sat_kernel(gray_img, block_size):
+    # start the timer
     height, width = gray_img.shape[0], gray_img.shape[1]
-
     d_sat = cuda.device_array((height + 1, width + 1), dtype=np.int64)
     d_sqsat = cuda.device_array((height + 1, width + 1), dtype=np.int64)
 
     d_sat[:-1], d_sqsat[:-1] = 0, 0
 
-    calculate_sat_kernel_x[(width-1) // block_size+1, block_size](gray_img.astype(np.int64), d_sat, d_sqsat)
-    calculate_sat_kernel_y[(height-1) // block_size+1, block_size](gray_img.astype(np.int64), d_sat, d_sqsat)
-
+    start = time.time()
+    calculate_sat_kernel_x[(height-1) // block_size+1, block_size](gray_img.astype(np.int64), d_sat, d_sqsat)
+    calculate_sat_kernel_y[(width-1) // block_size+1, block_size](gray_img.astype(np.int64), d_sat, d_sqsat)
+    end = time.time()
     sat = d_sat.copy_to_host().astype(np.int64)
     sqsat = d_sqsat.copy_to_host().astype(np.int64)
+    # print(sat)
 
+
+    # end the timer
+    print("Calculate SAT time: ", end-start)
+    
     test_calculate_sat_kernel(gray_img, sat)
     test_calculate_sat_kernel(np.power(gray_img, 2, dtype=np.int64), sqsat)
 
@@ -364,6 +380,7 @@ def main():
     in_img = cv.imread(ifname)
 
     # Run grayscale kernel
+    
     gray_img = evaluate_convert_rgb2gray_kernel(in_img,(32,32))
 
     # Run sat kernel
