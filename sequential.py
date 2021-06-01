@@ -4,6 +4,7 @@ import numpy as np
 from numba import jit
 from numba.typed import List
 import xml.etree.ElementTree as ET
+from timeit import default_timer as timer
 
 
 def load_model(file_name):
@@ -47,7 +48,6 @@ def load_model(file_name):
         classifier.
         5 is (x_topleft, y_topleft, width, height, weight) of each rectangle.
     '''
- 
     xmlr = ET.parse(file_name).getroot()
     cascade = xmlr.find('cascade')
     stages = cascade.find('stages')
@@ -59,7 +59,7 @@ def load_model(file_name):
     num_stages = len(stages)
     num_features = len(features)
  
-    stage_thresholds = np.empty(num_stages)
+    stage_thresholds = np.empty(num_stages, dtype=np.float64)
     tree_counts = np.empty(num_stages + 1, dtype=np.int16)
     feature_vals = np.empty((num_features, 3), dtype=np.float64)
  
@@ -74,9 +74,9 @@ def load_model(file_name):
         for tree in weak_classifiers:
             node = tree.find('internalNodes').text.split()
             leaf = tree.find('leafValues').text.split()
-            feature_vals[ft_cnt][0] = np.float64(node[3])
-            feature_vals[ft_cnt][1] = np.float64(leaf[0])
-            feature_vals[ft_cnt][2] = np.float64(leaf[1])
+            feature_vals[ft_cnt][0] = np.float64(node[3]) # threshold
+            feature_vals[ft_cnt][1] = np.float64(leaf[0]) # left value
+            feature_vals[ft_cnt][2] = np.float64(leaf[1]) # right vale
             ft_cnt += 1
  
     rect_counts = np.empty(num_features + 1, dtype=np.int16)
@@ -117,7 +117,6 @@ def convert_rgb2gray(in_pixels, out_pixels):
     out_pixels : numpy.ndarray with shape=(h, w)
         Output image in grayscale
     '''
- 
     for r in range(len(in_pixels)):
         for c in range(len(in_pixels[0])):
             out_pixels[r, c] = (in_pixels[r, c, 0] * 0.114 + 
@@ -140,7 +139,6 @@ def calculate_sat(in_pixels, sat, sqsat):
     sqsat : numpy.ndarray with shape=(h + 1, w + 1)
         Squared SAT 0-padding at top and left side of input image
     '''
- 
     sat[0, :], sqsat[0, :] = 0, 0
     for r in range(len(in_pixels)):
         row_sum, row_sqsum = 0, 0
@@ -157,7 +155,6 @@ def draw_rect(img, rect, color=0, thick=1):
     '''
     Draw bounding box on image.
     '''
-
     (x, y, w, h), t = rect, thick
     img[y:y+h, x-t:x+t+1] = color
     img[y:y+h, x+w-t:x+w+t+1] = color
@@ -170,7 +167,6 @@ def calc_sum_rect(sat, loc, rect, scale):
     '''
     Evaluate feature.
     '''
-
     tlx = loc[0] + np.int32(rect[0] * scale)
     tly = loc[1] + np.int32(rect[1] * scale)
     brx = loc[0] + np.int32((rect[0] + rect[2]) * scale)
@@ -181,9 +177,9 @@ def calc_sum_rect(sat, loc, rect, scale):
 @jit(nopython=True)
 def detect_at(model, sats, point, scale):
     '''
-    Detect object with a specific scale.
+    Detect object of a specific scale.
+    Return reject stage's index.
     '''
-
     base_win_sz, stage_thresholds, tree_counts, \
         feature_vals, rect_counts, rectangles = model
     sat, sqsat = sats
@@ -227,27 +223,31 @@ def detect_at(model, sats, point, scale):
 
  
 @jit(nopython=True)
-def detect_multi_scale(model, sats, out_img, base_scale=1.0, 
-                       scale_factor=1.1, min_neighbors=3):
+def detect_multi_scale(model, sats, img_size, scale_factor):
     '''
-
+    Detects objects of different sizes in the input image. The detected objects 
+    are returned as a list of rectangles.
     '''
-
     win_size = model[0]
     num_stages = len(model[1])
-    scale = base_scale
-    height, width = out_img.shape[:2]
+    scale = 1.0
+    width, height = img_size
     max_scale = min(width / win_size[0], height / win_size[1])
 
+    win_count = 0
     rec_list = List()
     while scale < max_scale:
         cur_win_size = (win_size * scale).astype(np.int32)
         step = int((2 if scale < 2 else 1) * scale)
         for y in range(0, height - cur_win_size[1], step):
             for x in range(0, width - cur_win_size[0], step):
+                win_count += 1
                 if detect_at(model, sats, (x, y), scale) == num_stages:
                     rec_list.append(np.array([x, y, cur_win_size[0], cur_win_size[1]]))
         scale *= scale_factor
+    
+    print('Number of candidates:', win_count)
+    print('Number of detections:', len(rec_list), '\n')
 
     return rec_list
 
@@ -273,6 +273,7 @@ def group_rectangles(rectangles, min_neighbors=3, eps=0.2):
     ------
     A list of grouped rectangles.
     '''
+    # For testing purpose, no grouping is done.
     if min_neighbors == 0:
         return rectangles
 
@@ -337,89 +338,108 @@ def group_rectangles(rectangles, min_neighbors=3, eps=0.2):
     return final_list
 
 
-@jit(nopython=True)
-def run(model, in_img, out_img, debug):
+def run(model, in_img, out_img, 
+        scale_factor=1.1, min_neighbors=3, eps=0.2, debug=True):
     '''
     Implement object detection workflow.
     '''
-
     height, width = in_img.shape[:2]
+    print(f'Image size (width x height): {width} x {height}\n')
+
+    start = timer()
 
     # Convert image to grayscale
     gray_img = np.empty((height, width), dtype=in_img.dtype)
     convert_rgb2gray(in_img, gray_img)
-    # if debug: test_convert_rgb2gray(in_img, gray_img)
  
     # Calculate Summed Area Table (SAT) and squared SAT
     sat = np.empty((height + 1, width + 1), dtype=np.int64)
     sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
     calculate_sat(gray_img, sat, sqsat)
-    # if debug: test_calculate_sat(gray_img, sat)
-    # if debug: test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
 
     # Detect object
-    candidates = detect_multi_scale(model, (sat, sqsat), out_img)
+    candidates = detect_multi_scale(model, (sat, sqsat), 
+                                    (width, height), scale_factor)
 
     # Group candidates
-    final_detections = group_rectangles(candidates, 4)
+    final_detections = group_rectangles(candidates, min_neighbors, eps)
 
     # Draw bounding box on output image
     for rec in final_detections:
         draw_rect(out_img, rec)
+
+    end = timer()
+    total_time = (end - start) * 1000
+    print(f'Total time on host: {total_time:0.6f} ms\n')
+
+    # Test
+    if debug:
+        test_convert_rgb2gray(in_img, gray_img)
+        test_calculate_sat(gray_img, sat, sqsat)
 
  
 def test_convert_rgb2gray(img, gray_img):
     '''
     Test convert_rgb2gray function
     '''
- 
     gray_img_np = (img @ [0.114, 0.587, 0.299]).astype(np.uint8)
     gray_img_cv = cv.cvtColor(img, code=cv.COLOR_BGR2GRAY)
  
-    print('Jitted vs Numpy  error:', 
+    print('Convert rgb to grayscale error:');
+    print(' - Jitted vs Numpy: ', 
           np.mean(np.abs(gray_img.astype(np.int16) - gray_img_np)))
-    print('Jitted vs Opencv error:', 
+    print(' - Jitted vs Opencv:', 
           np.mean(np.abs(gray_img.astype(np.int16) - gray_img_cv)))
-
-
-def test_calculate_sat(img, sat):
+ 
+ 
+def test_calculate_sat(img, sat, sqsat):
     '''
     Test calculate_sat function
     '''
-
     sat_np = np.array(img, dtype=np.int64)
     sat_np.cumsum(axis=0, out=sat_np).cumsum(axis=1, out=sat_np)
+    sqsat_np = np.power(img, 2, dtype=np.int64)
+    sqsat_np.cumsum(axis=0, out=sqsat_np).cumsum(axis=1, out=sqsat_np)
  
     total = np.sum(img)
     assert(total == sat[-1, -1])
     assert(total == sat_np[-1, -1])
     assert(np.array_equal(sat[1:, 1:], sat_np))
+    assert(np.array_equal(sqsat[1:, 1:], sqsat_np))
+    print('Calculate SAT: Pass');
 
 
 def main(_argv):
     argv = _argv if _argv else sys.argv
 
     # Read arguments
-    if len(argv) != 4:
-        print('python sequential.py MODEL INPUT OUTPUT')
+    args = ['sequential.py', 'MODEL', 'INPUT', 'OUTPUT', 
+            '[SCALE_FACTOR]', '[MIN_NEIGHBORS]', '[EPS]']
+    argc = len(argv)
+    if argc < 4 and argc > 7:
+        print('python ' + ' '.join(args))
         sys.exit(1)
-    mfname = argv[1]
-    ifname = argv[2]
-    ofname = argv[3]
+    argv += [None] * (len(args) - argc)
+    mfname, ifname, ofname, scale_factor, min_neighbors, eps = argv[1:]
  
     #Load Haar Cascade model
     model = load_model(mfname)
  
     # Read input image
     in_img = cv.imread(ifname)
+
+    # Allocate memory for output image
     out_img = in_img.copy()
  
     # Run object detection workflow
-    run(model, in_img, out_img, False)
+    scale_factor = 1.1 if scale_factor is None else float(scale_factor)
+    min_neighbors = 3 if min_neighbors is None else int(min_neighbors)
+    eps = 0.2 if eps is None else float(eps)
+    run(model, in_img, out_img, scale_factor, min_neighbors, debug=True)
  
     # Write output image
     cv.imwrite(ofname, out_img)
 
 
 # Execute
-main(None)
+main()
