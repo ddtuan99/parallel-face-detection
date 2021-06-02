@@ -1,9 +1,10 @@
-from re import S
+import xml.etree.ElementTree as ET
 import numpy as np
 import math
 from numba import jit, prange, cuda, int64
-import numba
+from numba.typed import List
 from numba import config
+import numba
 import sys
 import cv2 as cv
 import time
@@ -146,59 +147,258 @@ def load_model(file_name):
     return (window_size, stage_thresholds, tree_counts, 
             feature_vals, rect_counts, rectangles)
 
-@cuda.jig
-def detect_kernel(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals, rect_counts, rects):
-    # Detect multiple windows asynchronously
-    pass
+@cuda.jit(device=True)
+def calc_sum_rect(sat, loc, rect, scale):
+    '''
+    Evaluate feature.
+    '''
 
-def detect_multi_scale(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals, rect_counts, rects, shift_ratio = 0.1):
+    tlx = loc[0] + np.int32(rect[0] * scale)
+    tly = loc[1] + np.int32(rect[1] * scale)
+    brx = loc[0] + np.int32((rect[0] + rect[2]) * scale)
+    bry = loc[1] + np.int32((rect[1] + rect[3]) * scale)
+    return (sat[tly, tlx] + sat[bry, brx] - sat[bry, tlx] - sat[tly, brx]) * rect[4]
+
+
+ 
+@cuda.jit()
+def detect_kernel(base_win_sz, stage_thresholds, tree_counts, \
+                    feature_vals, rect_counts, rectangles, sats, scale, scale_idx, sld_w, sld_h, step, is_pass):
+    # Detect multiple windows asynchronously
+    x = cuda.threadIdx.x + cuda.blockIdx.x*cuda.blockDim.x
+    y = cuda.threadIdx.y + cuda.blockIdx.y*cuda.blockDim.y
+    x_sat = x * step
+    y_sat = y * step
+
+    sat, sqsat = sats
+    w, h = np.int32(base_win_sz[0] * scale), np.int32(base_win_sz[1] * scale)
+    inv_area = 1 / (w * h)
+
+    if x_sat < sld_w and y_sat < sld_h:
+        win_sum = sat[y_sat][x_sat] + sat[y_sat+h][x_sat+w] - sat[y_sat][x_sat+w] - sat[y_sat+h][x_sat]
+        win_sqsum = sqsat[y_sat][x_sat] + sqsat[y_sat+h][x_sat+w] - sqsat[y_sat][x_sat+w] - sqsat[y_sat+h][x_sat]
+        variance = win_sqsum * inv_area - (win_sum * inv_area) ** 2
+
+        # Reject low-variance intensity region, also take care of negative variance
+        # value due to inaccuracy floating point operation.
+        if variance < 100:
+            return 
+
+        std = math.sqrt(variance)
+
+        num_stages = len(stage_thresholds)
+        for stg_idx in prange(num_stages):
+            stg_sum = 0.0
+            for tr_idx in prange(tree_counts[stg_idx], tree_counts[stg_idx+1]): 
+                # Implement stump-base decision tree (tree has one feature) for now.
+                # Each feature consists of 2 or 3 rectangle.
+                rect_idx = rect_counts[tr_idx]
+                ft_sum = (calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx], scale) + 
+                        calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+1], scale))
+                if rect_idx + 2 < rect_counts[tr_idx+1]:
+                    ft_sum += calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+2], scale)
+                
+                # Compare ft_sum/(area*std) with threshold to choose return value.
+                stg_sum += (feature_vals[tr_idx][1] 
+                            if ft_sum * inv_area < feature_vals[tr_idx][0] * std 
+                            else feature_vals[tr_idx][2])
+
+            if stg_sum < stage_thresholds[stg_idx]:
+                return 
+        print((x_sat + y_sat * sld_w) + base_win_sz[0] * base_win_sz[1] * scale_idx)
+        is_pass[(x_sat + y_sat * sld_w) + base_win_sz[0] * base_win_sz[1] * scale_idx][0] = True
+
+
+def detect_multi_scale(model, sats, out_img, base_scale=1.0, 
+                       scale_factor=1.1):
     # Slide the detector window
-    width, height = len(sat[0]), len(sat)
-    max_scale = min([width/wd_size[0], height/wd_size[1]])
-    scale_inc = 1.1
-    scale = 1.0
-    result = List()
+    win_size = model[0]
+    scale = base_scale
+    scale_idx = 0
+    height, width = out_img.shape[:2]
+    max_scale = min(width / win_size[0], height / win_size[1])
+    rect_size = 0
+
+    base_win_sz, stage_thresholds, tree_counts, \
+        feature_vals, rect_counts, rectangles = model
+
+    base_win_size = (win_size * base_scale).astype(np.int32)       
+    base_sld_w = (width - base_win_size[0])
+    base_sld_h = (height - base_win_size[1])
+    base_rect_size = base_sld_w * base_sld_h
+    
+    while scale < max_scale:
+        rect_size += base_rect_size
+        scale *= scale_factor
+
+    d_is_pass = cuda.device_array((rect_size, 1), dtype=np.bool)
+
+    d_sats = numba.cuda.to_device(sats)
+    scale = base_scale 
+    block_size = (32, 32)
 
     while scale < max_scale:
-        cur_wd_size = (scale*wd_size).astype(np.int32)
-        step = (cur_wd_size*shift_ratio).astype(np.int32)
-        # Compute the sliding step of the window
-        for i in range(1, height - cur_wd_size[1], step[1]):
-            for j in range(1, width - cur_wd_size[0], step[0]):
-                accepted = True
-                for stg_idx, threshold in enumerate(stg_threshold):
-                    if not stage_pass(wd_size, (stg_idx, threshold), tree_counts, (sat, sqsat), ftr_vals, rect_counts, rects, (i, j), scale):
-                        accepted = False
-                        break
-                    
-                if accepted == True:
-                    result.append([j, i, int(cur_wd_size[0]), int(cur_wd_size[1])])
+        cur_win_size = (win_size * scale).astype(np.int32)
+        step = int((2 if scale < 2 else 1) * scale)
+        grid_size = (math.ceil((width - cur_win_size[0]) / block_size[0]), 
+                math.ceil((height - cur_win_size[1]) / block_size[1]))        
+        detect_kernel[grid_size, block_size](base_win_sz, stage_thresholds, tree_counts, \
+                                                    feature_vals, rect_counts, rectangles, d_sats, scale, scale_idx, width - cur_win_size[0], height - cur_win_size[1], step, d_is_pass)
+        scale *= scale_factor
+        scale_idx += 1
+    is_pass = d_is_pass.copy_to_host().astype(np.bool)
+    end = time.time()
     
-        scale *= scale_inc
-    return result
-    
-def main():
-    # Read arguments
-    if len(sys.argv) != 4:
-        print('python sequential.py MODEL INPUT OUTPUT')
-        sys.exit(1)
-    mfname = sys.argv[1]
-    ifname = sys.argv[2]
-    ofname = sys.argv[3]
- 
-    # Read image
-    img = cv.imread(ifname)
-    height, width = img.shape[:-1]
-    
+    is_pass = List(is_pass)
+
+    return is_pass
+
+@cuda.jit(device = True)
+def sum_rec(rec):
+    return rec[0] + rec[1] + rec[2] + rec[3]
+
+@jit(nopython = True)
+def delete_zero(win_size, height, width, base_scale, scale_factor, is_pass):
+    scale = base_scale
+    max_scale = min(width / win_size[0], height / win_size[1])    
+    rec_list = List()
+    scale_idx = 0
+
+    while scale < max_scale:
+        cur_win_size = (win_size * scale).astype(np.int32)
+        step = int((2 if scale < 2 else 1) * scale)
+        sld_h = height - cur_win_size[1]
+        sld_w = width - cur_win_size[0]
+        for y in range(0, sld_h, step):
+            for x in range(0, sld_w, step):
+                if is_pass[(x + y * sld_w) + win_size[0] * win_size[1] * scale_idx][0] == True:
+                    is_pass[(x + y * sld_w) + win_size[0] * win_size[1] * scale_idx][0] = False
+                    rec_list.append(np.array([x, y, cur_win_size[0], cur_win_size[1]]))
+        scale *= scale_factor
+        scale_idx += 1
+    return rec_list
+
+
+@jit(nopython=True)
+def group_rectangles(rectangles, min_neighbors=3, eps=0.2):
+    '''
+    Group object candidate rectangles.
+
+    Parameters
+    ----------
+    rectangles: list(np.array(4))
+        List of rectangles
+
+    min_neighbors: int
+        Minimum neighbors each candidate rectangle should have to retain it.
+
+    eps: float
+        Relative difference between sides of the rectangles to merge them into 
+    a group.
+
+    Return
+    ------
+    A list of grouped rectangles.
+    '''
+    if min_neighbors == 0:
+
+        final_list = List(rectangles)
+        return final_list
+
+    num_rects = len(rectangles)
+    num_classes = 0
+
+    groups = List()
+    num_members = List()
+    labels = np.empty(num_rects, dtype=np.int32)
+    for i in range(num_rects):
+        if rectangles[i][0] == -1:
+            continue
+        r1 = rectangles[i]
+        new_group = True
+        for j in range(i):
+            if rectangles[j][0] == -1:
+                continue
+            r2 = rectangles[j]
+            delta = eps * (min(r1[2], r2[2]) + min(r1[3], r2[3])) * 0.5
+            if (abs(r1[0] - r2[0]) <= delta and 
+                abs(r1[1] - r2[1]) <= delta and 
+                abs(r1[0] + r1[2] - r2[0] - r2[2]) <= delta and 
+                abs(r1[1] + r1[3] - r2[1] - r2[3]) <= delta):
+                new_group = False
+                labels[i] = labels[j]
+                groups[labels[j]] += r1
+                num_members[labels[j]] += 1
+                break
+        if new_group:
+            groups.append(r1)
+            num_members.append(1)
+            labels[i] = num_classes
+            num_classes += 1
+
+    # Filter out groups which don't have enough rectangles
+    i = 0
+    while i < num_classes:
+        while num_members[i] <= min_neighbors and i < num_classes:
+            num_classes -= 1
+            groups[i] = groups[num_classes]
+            num_members[i] = num_members[num_classes]
+        groups[i] //= num_members[i]
+        i += 1
+
+    # Filter out small rectangles inside large rectangles
+    final_list = List()
+    for i in range(num_classes):
+        r1 = groups[i]
+        m1 = max(3, num_members[i])
+        is_good = True
+        for j in range(num_classes):
+            if i == j:
+                continue
+            r2 = groups[j]
+            dx, dy = r2[2] * 0.2, r2[3] * 0.2
+            if (r1[0] >= r2[0] - dx and 
+                r1[1] >= r2[1] - dy and 
+                r1[0] + r1[2] <= r2[0] + r2[2] + dx and 
+                r1[1] + r1[3] <= r2[1] + r2[3] + dy and 
+                num_members[j] > m1):
+                is_good = False
+                break
+        if is_good:
+            final_list.append(r1)
+
+    return final_list
+
+@jit(nopython=True)
+def draw_rect(img, rect, color=0, thick=1):
+    '''
+    Draw bounding box on image.
+    '''
+
+    (x, y, w, h), t = rect, thick
+    img[y:y+h, x-t:x+t+1] = color
+    img[y:y+h, x+w-t:x+w+t+1] = color
+    img[y-t:y+t+1, x:x+w] = color
+    img[y+h-t:y+h+t+1, x:x+w] = color    
+
+def run(model, in_img, out_img, debug):
+    '''
+    Implement object detection workflow.
+    '''
+
+
+    height, width = in_img.shape[:2]
+
     # Convert image to grayscale
-    d_gray_img = cuda.device_array((height, width), dtype = img.dtype)
+    d_gray_img = cuda.device_array((height, width), dtype = in_img.dtype)
 
     block_size_rgb2gray = (32, 32)
-    grid_size_rgb2gray = (math.ceil(img.shape[1] / block_size_rgb2gray[0]), 
-                math.ceil(img.shape[0] / block_size_rgb2gray[1]))
-    convert_rgb2gray_kernel[grid_size_rgb2gray, block_size_rgb2gray](img, img.shape[1], img.shape[0], d_gray_img)
-    gray_img = d_gray_img.copy_to_host().astype(img.dtype)
-    test_convert_rgb2gray(img, gray_img)    
+    grid_size_rgb2gray = (math.ceil(in_img.shape[1] / block_size_rgb2gray[0]), 
+                math.ceil(in_img.shape[0] / block_size_rgb2gray[1]))
+
+    convert_rgb2gray_kernel[grid_size_rgb2gray, block_size_rgb2gray](in_img, in_img.shape[1], in_img.shape[0], d_gray_img)
+    gray_img = d_gray_img.copy_to_host().astype(in_img.dtype)
+    test_convert_rgb2gray(in_img, gray_img)    
 
     # Calculate Summed Area Table (SAT) and squared SAT
     d_sat = cuda.device_array((height + 1, width + 1), dtype=np.int64)
@@ -206,42 +406,68 @@ def main():
     d_sat[:-1], d_sqsat[:-1] = 0, 0
 
     block_size_sat = 32
-    grid_size_sat_y = math.ceil(img.shape[1]/block_size_sat)
-    grid_size_sat_x = math.ceil(img.shape[0]/block_size_sat)
+    grid_size_sat_y = math.ceil(in_img.shape[1]/block_size_sat)
+    grid_size_sat_x = math.ceil(in_img.shape[0]/block_size_sat)
 
     calculate_sat_kernel_x[grid_size_sat_x, block_size_sat](gray_img.astype(np.int64), d_sat, d_sqsat)
     calculate_sat_kernel_y[grid_size_sat_y, block_size_sat](gray_img.astype(np.int64), d_sat, d_sqsat)
+
     sat = d_sat.copy_to_host().astype(np.int64)
     sqsat = d_sqsat.copy_to_host().astype(np.int64)
     
     test_calculate_sat(gray_img, sat)
     test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
+    # if debug: test_calculate_sat(gray_img, sat)
+    # if debug: test_calculate_sat(np.power(gray_img, 2, dtype=np.int64), sqsat)
 
-    # Load model
-    wd_size, stg_threshold, tree_counts, ftr_vals, rect_counts, rects = load_model(mfname)
+    # Detect object
+    start = time.time()
+    candidates = detect_multi_scale(model, (sat, sqsat), out_img)
+    print(len(candidates))
+    
+    end = time.time()
+    print(end - start)
+    unique, counts = np.unique(candidates, return_counts=True)
+    print(dict(zip(unique, counts)))
 
-    # shift_ratio = 0.05
-    # start = time.time()
-    # result = detect_multi_scale(wd_size, stg_threshold, tree_counts, sat, sqsat, ftr_vals, rect_counts, rects, shift_ratio)
-    # end = time.time()
-    # print("Time: " + str(end - start))
-    # # result = [tuple(r) for r in result]
-    # # merged_result = cv.groupRectangles(result, 3)[0]
+    result = delete_zero(model[0], height, width, 1.0, 1.1, candidates)
+    print(len(result))
+    end3 = time.time()
+    print(end3 - end)
+    # Group candidates
 
-    # result = np.array(result)
-    # merged_result = merge(result, 4)
+    print(result[:100])
 
-    # color = (255, 255, 255)
-    # thickness = 2
-    # detected_img = img.copy()
+    final_detections = group_rectangles(result, 0)
 
-    # for rect in result:
-    #     start_point = (rect[0], rect[1])
-    #     end_point = (rect[0] + rect[2], rect[1] + rect[3])
-    #     detected_img = cv.rectangle(detected_img, start_point, end_point, color, thickness)
+    # Draw bounding box on output image
+    for rec in final_detections:
+        draw_rect(out_img, rec)
 
-    # Write image
-    cv.imwrite(ofname, gray_img)
+
+def main(_argv):
+    argv = _argv if _argv else sys.argv
+
+    # Read arguments
+    if len(argv) != 4:
+        print('python sequential.py MODEL INPUT OUTPUT')
+        sys.exit(1)
+    mfname = argv[1]
+    ifname = argv[2]
+    ofname = argv[3]
+ 
+    #Load Haar Cascade model
+    model = load_model(mfname)
+ 
+    # Read input image
+    in_img = cv.imread(ifname)
+    out_img = in_img.copy()
+ 
+    # Run object detection workflow
+    run(model, in_img, out_img, False)
+ 
+    # Write output image
+    cv.imwrite(ofname, out_img)
 
 # Execute
-main()
+main(None)
