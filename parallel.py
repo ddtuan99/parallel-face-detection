@@ -103,7 +103,40 @@ def load_model(file_name):
     return (window_size, stage_thresholds, tree_counts, 
             feature_vals, rect_counts, rectangles)
  
+@jit(nopython=True)
+def convert_rgb2gray(in_pixels, out_pixels):
+    '''
+    Convert color image to grayscale image.
  
+    in_pixels : numpy.ndarray with shape=(h, w, 3)
+                h, w is height, width of image
+                3 is colors with BGR (blue, green, red) order
+        Input RGB image
+    
+    out_pixels : numpy.ndarray with shape=(h, w)
+        Output image in grayscale
+    '''
+ 
+    for r in range(len(in_pixels)):
+        for c in range(len(in_pixels[0])):
+            out_pixels[r, c] = (in_pixels[r, c, 0] * 0.114 + 
+                                in_pixels[r, c, 1] * 0.587 +  
+                                in_pixels[r, c, 2] * 0.299)
+
+def test_convert_rgb2gray(img, gray_img):
+    '''
+    Test convert_rgb2gray function
+    '''
+ 
+    gray_img_np = (img @ [0.114, 0.587, 0.299]).astype(np.uint8)
+    gray_img_cv = cv.cvtColor(img, code=cv.COLOR_BGR2GRAY)
+ 
+    print('Jitted vs Numpy  error:', 
+          np.mean(np.abs(gray_img.astype(np.int16) - gray_img_np)))
+    print('Jitted vs Opencv error:', 
+          np.mean(np.abs(gray_img.astype(np.int16) - gray_img_cv)))
+
+
 @cuda.jit
 def convert_rgb2gray_kernel(in_pixels, out_pixels, width, height):
     '''
@@ -129,6 +162,7 @@ def convert_rgb2gray_kernel(in_pixels, out_pixels, width, height):
                             0.587*curr_px[1] + 
                             0.299*curr_px[2])
 
+
 def test_convert_rgb2gray_kernel(img, gray_img):
     '''
     Test convert_rgb2gray function
@@ -151,7 +185,34 @@ def calculate_sat_kernel_x(in_pixels, sat, sqsat):
         for c in range(len(in_pixels[0])):
             sat[y + 1, c + 1] = sat[y + 1, c] + in_pixels[y, c]
             sqsat[y + 1, c + 1] = sqsat[y + 1, c] + in_pixels[y, c]**2
-        
+
+@jit(nopython=True)
+def calculate_sat(in_pixels, sat, sqsat):
+    '''
+    Calculate Summed Area Table (SAT) and Squared SAT
+ 
+    in_pixels : numpy.ndarray with shape=(h, w)
+                h, w is height, width of image
+        Grayscale image need to calculate SAT
+    
+    sat : numpy.ndarray with shape=(h + 1, w + 1)
+        SAT 0-padding at top and left side of input image
+ 
+    sqsat : numpy.ndarray with shape=(h + 1, w + 1)
+        Squared SAT 0-padding at top and left side of input image
+    '''
+ 
+    sat[0, :], sqsat[0, :] = 0, 0
+    for r in range(len(in_pixels)):
+        row_sum, row_sqsum = 0, 0
+        sat[r + 1, 0], sqsat[r + 1, 0] = 0, 0
+        for c in range(len(in_pixels[0])):
+            row_sum += in_pixels[r, c]
+            row_sqsum += in_pixels[r, c] ** 2
+            sat[r + 1, c + 1] = row_sum + sat[r, c + 1]
+            sqsat[r + 1, c + 1] = row_sqsum + sqsat[r, c + 1]
+  
+
 @cuda.jit
 def calculate_sat_kernel_y(in_pixels, sat, sqsat):
     x = cuda.blockIdx.x*cuda.blockDim.x + cuda.threadIdx.x
@@ -319,54 +380,77 @@ def draw(merge_img, color, thickness, out_img):
         end_point = (rect[0] + rect[2], rect[1] + rect[3])
         out_img = cv.rectangle(out_img, start_point, end_point, color, thickness)
 
-def evaluate_convert_rgb2gray_kernel(in_img, block_size):
+# @jit(nopython=True)
+def evaluate_convert_rgb2gray_kernel(in_img, block_size, use_device):
     height, width = in_img.shape[:-1]
-    
-    # Allocate device memories
-    d_gray_img = cuda.device_array((height, width), dtype = in_img.dtype)
+    if not use_device:
+        start = time.time()
+        out_img = np.empty((height, width), dtype=in_img.dtype)
+        convert_rgb2gray(in_img, out_img)
+        end = time.time()
+        print("Convert to grayscale host time:", end-start, "(s)")
+        test_convert_rgb2gray(in_img, out_img)
+        return out_img
 
-    # Set grid size and invoke kernel
-    grid_size = ((height-1) // block_size[1]+1, (width-1) // block_size[0]+1)
-    start = time.time()
-    convert_rgb2gray_kernel[grid_size,block_size](in_img,d_gray_img,width,height)
-    end = time.time()
-    # Copy data to host
-    gray_img = d_gray_img.copy_to_host().astype(in_img.dtype)
+    else:    
+        # Allocate device memories
+        d_gray_img = cuda.device_array((height, width), dtype = in_img.dtype)
 
-    # print("Convert to grayscale kernel time:", end-start)
+        # Set grid size and invoke kernel
+        grid_size = ((height-1) // block_size[1]+1, (width-1) // block_size[0]+1)
+        start = time.time()
+        convert_rgb2gray_kernel[grid_size,block_size](in_img,d_gray_img,width,height)
+        end = time.time()
+        # Copy data to host
+        out_img = d_gray_img.copy_to_host().astype(in_img.dtype)
 
-    # print(gray_img)
+        print("Convert to grayscale kernel time:", end-start, "(s)")
 
-    # Compute error
-    # test_convert_rgb2gray_kernel(in_img,gray_img)
+        # print(gray_img)
 
-    # Write image
-    cv.imwrite("output.jpg", gray_img)
+        # Compute error
+        # test_convert_rgb2gray_kernel(in_img,out_img)
 
-    return gray_img
 
-def evaluate_calculate_sat_kernel(gray_img, block_size):
-    # start the timer
+        return out_img
+
+
+def evaluate_calculate_sat_kernel(gray_img, block_size, use_device):
     height, width = gray_img.shape[0], gray_img.shape[1]
-    d_sat = cuda.device_array((height + 1, width + 1), dtype=np.int64)
-    d_sqsat = cuda.device_array((height + 1, width + 1), dtype=np.int64)
+    if not use_device:
+        start = time.time()
+        sat = np.empty((height + 1, width + 1), dtype=np.int64)
+        sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
+        calculate_sat(gray_img,sat,sqsat)
+        end = time.time()
+        print("Calculate SAT host time:", end-start, "(s)")
+        return [sat,sqsat]
 
-    d_sat[:-1], d_sqsat[:-1] = 0, 0
+    else:
+        # start the timer
+        d_sat = cuda.device_array((height + 1, width + 1), dtype=np.int64)
+        d_sqsat = cuda.device_array((height + 1, width + 1), dtype=np.int64)
 
-    start = time.time()
-    calculate_sat_kernel_x[(height-1) // block_size+1, block_size](gray_img.astype(np.int64), d_sat, d_sqsat)
-    calculate_sat_kernel_y[(width-1) // block_size+1, block_size](gray_img.astype(np.int64), d_sat, d_sqsat)
-    end = time.time()
-    sat = d_sat.copy_to_host().astype(np.int64)
-    sqsat = d_sqsat.copy_to_host().astype(np.int64)
-    # print(sat)
+        d_sat[:-1], d_sqsat[:-1] = 0, 0
+
+        start1 = time.time()
+        calculate_sat_kernel_x[(height-1) // block_size+1, block_size](gray_img.astype(np.int64), d_sat, d_sqsat)
+        end1 = time.time()
+        start2 = time.time()
+        calculate_sat_kernel_y[(width-1) // block_size+1, block_size](gray_img.astype(np.int64), d_sat, d_sqsat)
+        end2 = time.time()
+        sat = d_sat.copy_to_host().astype(np.int64)
+        sqsat = d_sqsat.copy_to_host().astype(np.int64)
+        # print(sat)
 
 
-    # end the timer
-    print("Calculate SAT time: ", end-start)
-    
-    test_calculate_sat_kernel(gray_img, sat)
-    test_calculate_sat_kernel(np.power(gray_img, 2, dtype=np.int64), sqsat)
+        # end the timer
+        print("Calculate SAT kernel time:", end2-start2+end1-start1, "(s)")
+        
+        # test_calculate_sat_kernel(gray_img, sat)
+        # test_calculate_sat_kernel(np.power(gray_img, 2, dtype=np.int64), sqsat)
+
+        return [sat,sqsat]
 
 def main():
     # Read arguments
@@ -381,11 +465,22 @@ def main():
 
     # Run grayscale kernel
     
-    gray_img = evaluate_convert_rgb2gray_kernel(in_img,(32,32))
+    gray_img = evaluate_convert_rgb2gray_kernel(in_img,(32,32),False)
+    # d_gray_img = evaluate_convert_rgb2gray_kernel(in_img,(32,32),True)
+
+    # print('Parallel vs Sequential error:', 
+    #       np.mean(np.abs(d_gray_img - gray_img)))
+
 
     # Run sat kernel
-    evaluate_calculate_sat_kernel(gray_img, 32)
+    sat, sqsat= evaluate_calculate_sat_kernel(gray_img, 32, False)
+    d_sat, d_sqsat= evaluate_calculate_sat_kernel(gray_img, 32, True)
 
+    print('Parallel vs Sequential sat error:', 
+          np.mean(np.abs(d_sat - sat)))
+
+    print('Parallel vs Sequential squared sat error:', 
+          np.mean(np.abs(d_sqsat - sqsat)))
 
     # out_img = in_img.copy()
 
@@ -393,7 +488,7 @@ def main():
     # run(model,in_img,out_img)
 
     # Write image
-    # cv.imwrite(ofname, out_img)
+    cv.imwrite(ofname, gray_img)
     
 # Execute
 main()
