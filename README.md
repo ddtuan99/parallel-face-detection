@@ -89,13 +89,20 @@
   <tr>
     <td rowspan="2">7</td>
     <td>27/5-31/5</td>
-    <td>Cài đặt hàm detect1scale<br>Tổng hợp nội dung cài đặt song song vào file báo cáo</td>
-    <td>Cài đặt hàm detect1scale<br></td>
-    <td>Cải thiện tính bảng SAT bằng Scan<br></td>
+    <td>Tổng hợp nội dung cài đặt song song vào file báo cáo</td>
+    <td>Cài đặt hàm detect1scale cho phần song song hóa<br></td>
+    <td>Format, review code, thêm tham số dòng lệnh</td>
   </tr>
   <tr>
     <td>1/6</td>
     <td colspan="3">Họp nhóm: merge báo cáo và review code</td>
+  </tr>
+  <tr>
+    <td>8</td>
+    <td>2/6-8/6</td>
+    <td>Thực hiện kịch bản thí nghiệm </td>
+    <td>Hoàn thành cài đặt song song hóa</td>
+    <td>Xây dựng lại kịch bản thí nghiệm thể hiện tính đúng đắn của cài đặt<br>Tiếp tục hoàn thiện báo cáo phần thiết kế</td>
   </tr>
 </tbody>
 </table>
