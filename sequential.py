@@ -1,4 +1,5 @@
 import sys
+import argparse
 import cv2 as cv
 import numpy as np
 from numba import jit
@@ -122,8 +123,8 @@ def convert_rgb2gray(in_pixels, out_pixels):
             out_pixels[r, c] = (in_pixels[r, c, 0] * 0.114 + 
                                 in_pixels[r, c, 1] * 0.587 + 
                                 in_pixels[r, c, 2] * 0.299)
- 
- 
+
+
 @jit(nopython=True)
 def calculate_sat(in_pixels, sat, sqsat):
     '''
@@ -221,7 +222,7 @@ def detect_at(model, sats, point, scale):
     
     return num_stages
 
- 
+
 @jit(nopython=True)
 def detect_multi_scale(model, sats, img_size, scale_factor):
     '''
@@ -377,7 +378,7 @@ def run(model, in_img, out_img,
         test_convert_rgb2gray(in_img, gray_img)
         test_calculate_sat(gray_img, sat, sqsat)
 
- 
+
 def test_convert_rgb2gray(img, gray_img):
     '''
     Test convert_rgb2gray function
@@ -406,39 +407,40 @@ def test_calculate_sat(img, sat, sqsat):
     assert(total == sat_np[-1, -1])
     assert(np.array_equal(sat[1:, 1:], sat_np))
     assert(np.array_equal(sqsat[1:, 1:], sqsat_np))
-    print('Calculate SAT: Pass');
+    print('Calculate SAT: Pass')
 
 
-def main(_argv):
-    argv = _argv if _argv else sys.argv
+def main(_argv=None):
+    argv = _argv.split() if _argv else sys.argv[1:]
 
-    # Read arguments
-    args = ['sequential.py', 'MODEL', 'INPUT', 'OUTPUT', 
-            '[SCALE_FACTOR]', '[MIN_NEIGHBORS]', '[EPS]']
-    argc = len(argv)
-    if argc < 4 and argc > 7:
-        print('python ' + ' '.join(args))
-        sys.exit(1)
-    argv += [None] * (len(args) - argc)
-    mfname, ifname, ofname, scale_factor, min_neighbors, eps = argv[1:]
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='Face detection using Cascaded-classifiers.', 
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('model', help="Opencv's Haar Cascade pre-trained model")
+    parser.add_argument('input', help='Input image')
+    parser.add_argument('output', help='Output image')
+    parser.add_argument('-s', default=1.1, type=float, help='Scale factor')
+    parser.add_argument('-m', default=3, type=int, help='Min neighbors')
+    parser.add_argument('-e', default=0.2, type=float, help='Epsilon')
+    params = parser.parse_args(argv)
  
     #Load Haar Cascade model
-    model = load_model(mfname)
+    model = load_model(params.model)
  
     # Read input image
-    in_img = cv.imread(ifname)
+    in_img = cv.imread(params.input)
 
     # Allocate memory for output image
     out_img = in_img.copy()
  
     # Run object detection workflow
-    scale_factor = 1.1 if scale_factor is None else float(scale_factor)
-    min_neighbors = 3 if min_neighbors is None else int(min_neighbors)
-    eps = 0.2 if eps is None else float(eps)
-    run(model, in_img, out_img, scale_factor, min_neighbors, debug=True)
+    scale_factor = params.s
+    min_neighbors = params.m
+    eps = params.e
+    run(model, in_img, out_img, scale_factor, min_neighbors, eps, debug=True)
  
     # Write output image
-    cv.imwrite(ofname, out_img)
+    cv.imwrite(params.output, out_img)
 
 
 # Execute
