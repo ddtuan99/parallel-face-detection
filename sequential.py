@@ -249,7 +249,7 @@ def detect(gray_image, model, sat, sqsat, scale_inc):
                         break
                 
                 if passed:
-                    print("Passed!")
+                    # print("Passed!")
                     # face_list.append([j,j,size_x,size_y])
                     face_list = np.append(face_list, np.array([[j, i, size_x, size_y]], dtype = np.int16), axis = 0)
 
@@ -329,16 +329,19 @@ def run(model, in_img, out_img):
     gray_img = np.empty((height, width), dtype=in_img.dtype)
     convert_rgb2gray(in_img, gray_img)
 
+    test_convert_rgb2gray(in_img,gray_img)
+
     # Calculate Summed Area Table (SAT) and squared SAT
     sat = np.empty((height + 1, width + 1), dtype=np.int64)
     sqsat = np.empty((height + 1, width + 1), dtype=np.int64)
     calculate_sat(gray_img, sat, sqsat)
 
+
     # Detect
-    face_list = detect(gray_img, model, sat, sqsat, 1.5)
+    face_list = detect(gray_img, model, sat, sqsat, 1.8)
 
     # Merge
-    merged_img = merge(face_list, 3)
+    merged_img = merge(face_list, 4)
 
     color = (0, 255, 0)
     thickness = 2
@@ -354,19 +357,42 @@ def main():
     ifname = sys.argv[1]
     ofname = sys.argv[2]
  
-    #Load Haar Cascade model
-    model = load_model('haarcascade_frontalface_default.xml')
+    # #Load Haar Cascade model
+    # model = load_model('haarcascade_frontalface_default.xml')
  
-    # Read image
-    in_img = cv.imread(ifname)
+    # # Read image
+    # in_img = cv.imread(ifname)
  
-    out_img = in_img.copy()
+    # out_img = in_img.copy()
 
-    # Run 
-    run(model,in_img,out_img)
+    # # Run 
+    # run(model,in_img,out_img)
 
-    # Write image
-    cv.imwrite(ofname, out_img)
+    # # Write image
+    # cv.imwrite(ofname, out_img)
+
+    # Opening image
+    img = cv.imread("chon-anh-ghep.png")
+    img_gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    img_rgb = cv.cvtColor(img, cv.COLOR_BGR2RGB)
+    
+
+    stop_data = cv.CascadeClassifier('haarcascade_frontalface_alt.xml')
+    
+    found = stop_data.detectMultiScale(img_gray, 
+                                    minSize =(20, 20))
+    
+    amount_found = len(found)
+    
+    if amount_found != 0:
+     
+        for (x, y, width, height) in found:
+          
+            cv.rectangle(img_rgb, (x, y), 
+                        (x + height, y + width), 
+                        (0, 255, 0), 5)
+    cv.imwrite(ofname, img_rgb)
+            
     
 # Execute
 main()
