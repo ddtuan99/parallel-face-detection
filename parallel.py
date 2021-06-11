@@ -1,6 +1,6 @@
 import sys
 import math
-import numba
+import numba as nb
 import argparse
 import cv2 as cv
 import numpy as np
@@ -110,7 +110,7 @@ def load_model(file_name):
             feature_vals, rect_counts, rectangles)
 
 
-@cuda.jit(numba.void(numba.uint8[:, :, ::1], numba.uint8[:, ::1]))
+@cuda.jit(nb.void(nb.uint8[:, :, ::1], nb.uint8[:, ::1]))
 def convert_rgb2gray_kernel(in_pixels, out_pixels):
     c, r = cuda.grid(2)
     if r < out_pixels.shape[0] and c < out_pixels.shape[1]:
@@ -119,7 +119,7 @@ def convert_rgb2gray_kernel(in_pixels, out_pixels):
                             in_pixels[r, c, 2] * 0.299)
 
 
-@cuda.jit(numba.void(numba.uint8[:, ::1], numba.int64[:, ::1], numba.int64[:, ::1]))
+@cuda.jit(nb.void(nb.uint8[:, ::1], nb.int64[:, ::1], nb.int64[:, ::1]))
 def cal_rows_cumsum(in_pixels, sat, sqsat):
     '''
     Calculate row-wise cummulative sum of in_pixels.
@@ -131,7 +131,7 @@ def cal_rows_cumsum(in_pixels, sat, sqsat):
             sqsat[r + 1, c + 1] = sqsat[r + 1, c] + in_pixels[r, c] ** 2
 
 
-@cuda.jit(numba.void(numba.uint8[:, ::1], numba.int64[:, ::1], numba.int64[:, ::1]))
+@cuda.jit(nb.void(nb.uint8[:, ::1], nb.int64[:, ::1], nb.int64[:, ::1]))
 def cal_cols_cumsum(in_pixels, sat, sqsat):
     '''
     Calculate column-wise cummulative sum of sat and sqsat.
@@ -143,7 +143,7 @@ def cal_cols_cumsum(in_pixels, sat, sqsat):
             sqsat[r + 1, c + 1] += sqsat[r, c + 1]
 
 
-@jit(nopython=True)
+@jit(nb.void(nb.uint8[:, :, ::1], nb.int64[::1], nb.int64, nb.int64), nopython=True)
 def draw_rect(img, rect, color=0, thick=1):
     '''
     Draw bounding box on image.
@@ -155,7 +155,7 @@ def draw_rect(img, rect, color=0, thick=1):
     img[y+h-t:y+h+t+1, x:x+w] = color
 
 
-@jit(nopython=True)
+@cuda.jit(device=True)
 def calc_sum_rect(sat, loc, rect, scale):
     '''
     Evaluate feature.
@@ -165,87 +165,130 @@ def calc_sum_rect(sat, loc, rect, scale):
     brx = loc[0] + np.int32((rect[0] + rect[2]) * scale)
     bry = loc[1] + np.int32((rect[1] + rect[3]) * scale)
     return (sat[tly, tlx] + sat[bry, brx] - sat[bry, tlx] - sat[tly, brx]) * rect[4]
+ 
 
+@cuda.jit()
+def detect_kernel(base_win_sz, stage_thresholds, tree_counts, 
+                  feature_vals, rect_counts, rectangles, sat, sqsat, 
+                  scale, scale_idx, sld_w, sld_h, step, candidates_w, num_candidates, is_pass):
+    x, y = cuda.grid(2)
+    x_sat = x * step
+    y_sat = y * step
 
-@jit(nopython=True)
-def detect_at(model, sats, point, scale):
-    '''
-    Detect object of a specific scale.
-    Return reject stage's index.
-    '''
-    base_win_sz, stage_thresholds, tree_counts, \
-        feature_vals, rect_counts, rectangles = model
-    sat, sqsat = sats
-
-    w, h = int(base_win_sz[0] * scale), int(base_win_sz[1] * scale)
+    w, h = np.int32(base_win_sz[0] * scale), np.int32(base_win_sz[1] * scale)
     inv_area = 1 / (w * h)
 
-    x, y = point
-    win_sum = sat[y][x] + sat[y+h][x+w] - sat[y][x+w] - sat[y+h][x]
-    win_sqsum = sqsat[y][x] + sqsat[y+h][x+w] - sqsat[y][x+w] - sqsat[y+h][x]
-    variance = win_sqsum * inv_area - (win_sum * inv_area) ** 2
+    if x_sat < sld_w and y_sat < sld_h:
+        win_sum = sat[y_sat][x_sat] + sat[y_sat+h][x_sat+w] - sat[y_sat][x_sat+w] - sat[y_sat+h][x_sat]
+        win_sqsum = sqsat[y_sat][x_sat] + sqsat[y_sat+h][x_sat+w] - sqsat[y_sat][x_sat+w] - sqsat[y_sat+h][x_sat]
+        variance = win_sqsum * inv_area - (win_sum * inv_area) ** 2
 
-    # Reject low-variance intensity region, also take care of negative variance
-    # value due to inaccuracy floating point operation.
-    if variance < 100:
-        return -1
+        # Reject low-variance intensity region, also take care of negative variance
+        # value due to inaccuracy floating point operation.
+        if variance < 100:
+            return 
 
-    std = np.sqrt(variance)
+        std = math.sqrt(variance)
 
-    num_stages = len(stage_thresholds)
-    for stg_idx in range(num_stages):
-        stg_sum = 0.0
-        for tr_idx in range(tree_counts[stg_idx], tree_counts[stg_idx+1]): 
-            # Implement stump-base decision tree (tree has one feature) for now.
-            # Each feature consists of 2 or 3 rectangle.
-            rect_idx = rect_counts[tr_idx]
-            ft_sum = (calc_sum_rect(sat, point, rectangles[rect_idx], scale) + 
-                      calc_sum_rect(sat, point, rectangles[rect_idx+1], scale))
-            if rect_idx + 2 < rect_counts[tr_idx+1]:
-                ft_sum += calc_sum_rect(sat, point, rectangles[rect_idx+2], scale)
-            
-            # Compare ft_sum/(area*std) with threshold to choose return value.
-            stg_sum += (feature_vals[tr_idx][1] 
-                        if ft_sum * inv_area < feature_vals[tr_idx][0] * std 
-                        else feature_vals[tr_idx][2])
+        num_stages = len(stage_thresholds)
+        for stg_idx in range(num_stages):
+            stg_sum = 0.0
+            for tr_idx in range(tree_counts[stg_idx], tree_counts[stg_idx+1]): 
+                # Implement stump-base decision tree (tree has one feature) for now.
+                # Each feature consists of 2 or 3 rectangle.
+                rect_idx = rect_counts[tr_idx]
+                ft_sum = (calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx], scale) + 
+                        calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+1], scale))
+                if rect_idx + 2 < rect_counts[tr_idx+1]:
+                    ft_sum += calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+2], scale)
+                
+                # Compare ft_sum/(area*std) with threshold to choose return value.
+                stg_sum += (feature_vals[tr_idx][1] 
+                            if ft_sum * inv_area < feature_vals[tr_idx][0] * std 
+                            else feature_vals[tr_idx][2])
 
-        if stg_sum < stage_thresholds[stg_idx]:
-            return stg_idx
-    
-    return num_stages
+            if stg_sum < stage_thresholds[stg_idx]:
+                return 
 
- 
-@jit(nopython=True)
-def detect_multi_scale(model, sats, img_size, scale_factor):
-    '''
-    Detects objects of different sizes in the input image. The detected objects 
-    are returned as a list of rectangles.
-    '''
+        is_pass[x + y * candidates_w + num_candidates[scale_idx]]= True
+
+
+def detect_multi_scale(model, sats, out_img, scale_factor=1.1):
     win_size = model[0]
-    num_stages = len(model[1])
-    scale = 1.0
-    width, height = img_size
+    height, width = out_img.shape[:2]
     max_scale = min(width / win_size[0], height / win_size[1])
 
-    win_count = 0
-    rec_list = List()
+    # Number of candidates before each scale
+    num_candidates = List()
+    total_candidates = 0
+    
+    scale = 1.0
+    while scale < max_scale:
+        num_candidates.append(total_candidates)
+        cur_win_size = (win_size * scale).astype(np.int32)
+        step = int(1.25 * scale + 0.5)
+        sld_h = height - cur_win_size[1]
+        sld_w = width - cur_win_size[0]
+        total_candidates += math.ceil(sld_w / step) * math.ceil(sld_h / step)
+        scale *= scale_factor
+
+    d_is_pass = cuda.device_array(total_candidates, dtype=np.bool)
+    d_num_candidates = nb.cuda.to_device(num_candidates)
+
+    base_win_sz, stage_thresholds, tree_counts, \
+        feature_vals, rect_counts, rectangles = model
+
+    d_base_win_size = cuda.to_device(base_win_sz)
+    d_stage_thresholds = cuda.to_device(stage_thresholds)
+    d_tree_counts = cuda.to_device(tree_counts)
+    d_feature_vals = cuda.to_device(feature_vals)
+    d_rect_count = cuda.to_device(rect_counts)
+    d_rectangles = cuda.to_device(rectangles)
+
+    scale = 1.0
+    scale_idx = 0
     while scale < max_scale:
         cur_win_size = (win_size * scale).astype(np.int32)
-        step = int((2 if scale < 2 else 1) * scale)
-        for y in range(0, height - cur_win_size[1], step):
-            for x in range(0, width - cur_win_size[0], step):
-                win_count += 1
-                if detect_at(model, sats, (x, y), scale) == num_stages:
-                    rec_list.append(np.array([x, y, cur_win_size[0], cur_win_size[1]]))
+        step = int(1.25 * scale + 0.5)
+        sld_w = width - cur_win_size[0]
+        sld_h = height - cur_win_size[1]
+        grid_size = (math.ceil((sld_w) / BLOCK_SIZE[0]), 
+                     math.ceil((sld_h) / BLOCK_SIZE[1]))        
+        detect_kernel[grid_size, BLOCK_SIZE](d_base_win_size, d_stage_thresholds, d_tree_counts,
+                                             d_feature_vals, d_rect_count, d_rectangles, 
+                                             sats[0], sats[1], scale, scale_idx, 
+                                             sld_w, sld_h, step, math.ceil(sld_w / step), d_num_candidates, d_is_pass)
         scale *= scale_factor
-    
-    print('Number of candidates:', win_count)
-    print('Number of detections:', len(rec_list), '\n')
+        scale_idx += 1    
 
+    cuda.synchronize()
+    is_pass = d_is_pass.copy_to_host().astype(np.bool)
+    return is_pass
+
+
+@jit(nb.types.ListType(nb.int64[::1])(nb.int64[::1], nb.int64, nb.int64, nb.float64, nb.boolean[::1]), nopython=True)
+def delete_zero(win_size, height, width, scale_factor, is_pass):
+    scale = 1.0
+    max_scale = min(width / win_size[0], height / win_size[1])    
+    rec_list = List()
+    scale_idx = 0
+    idx = 0
+    while scale < max_scale:
+        cur_win_size = (win_size * scale).astype(np.int32)
+        step = int(1.25 * scale + 0.5)
+        sld_h = height - cur_win_size[1]
+        sld_w = width - cur_win_size[0]
+        for y in range(0, sld_h, step):
+            for x in range(0, sld_w, step):
+                if is_pass[idx] == True:
+                    rec_list.append(np.array([x, y, cur_win_size[0], cur_win_size[1]]))
+                idx += 1
+        scale *= scale_factor
+        scale_idx += 1
     return rec_list
 
 
-@jit(nopython=True)
+@jit(nb.types.ListType(nb.int64[::1])(nb.types.ListType(nb.int64[::1]), nb.int64, nb.float64), nopython=True)
 def group_rectangles(rectangles, min_neighbors=3, eps=0.2):
     '''
     Group object candidate rectangles.
@@ -356,17 +399,19 @@ def run(model, in_img, out_img,
     cal_cols_cumsum[grid_size[0], BLOCK_SIZE[0]](d_gray_img, d_sat, d_sqsat)
 
     # Detect object
-    sat = d_sat.copy_to_host()
-    sqsat = d_sqsat.copy_to_host()
-    candidates = detect_multi_scale(model, (sat, sqsat), 
-                                    (width, height), scale_factor)
+    candidates = detect_multi_scale(model, (d_sat, d_sqsat), out_img, scale_factor = scale_factor)
+    print('Number of candidates:', len(candidates))
+
+    # Filter windows that didn't pass all stages
+    result = delete_zero(model[0], height, width, scale_factor, candidates)
+    print('Number of detections:', len(result))
 
     # Group candidates
-    final_detections = group_rectangles(candidates, min_neighbors, eps)
+    final_detections = group_rectangles(result, min_neighbors, eps)
 
     # Draw bounding box on output image
     for rec in final_detections:
-        draw_rect(out_img, rec)
+        draw_rect(out_img, rec, color=0, thick=1)
 
     end = timer()
     total_time = (end - start) * 1000
@@ -375,10 +420,12 @@ def run(model, in_img, out_img,
     # Test
     if debug:
         gray_img = d_gray_img.copy_to_host()
+        sat = d_sat.copy_to_host()
+        sqsat = d_sqsat.copy_to_host()
         test_convert_rgb2gray(in_img, gray_img)
-        test_calculate_sat(gray_img, sat, sqsat)
+        test_calculate_sat(gray_img, sat, sqsat)        
 
- 
+
 def test_convert_rgb2gray(img, gray_img):
     '''
     Test convert_rgb2gray function
