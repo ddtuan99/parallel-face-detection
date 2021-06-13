@@ -92,7 +92,7 @@ def load_model(file_name):
         rect_count = len(feature.find('rects'))
         rect_counts[ft_idx + 1] = rect_counts[ft_idx] + np.int16(rect_count)
  
-    rectangles = np.empty((rect_counts[-1], 5), np.int8)
+    rectangles = np.empty((rect_counts[-1], 5), np.int32)
  
     rect_cnt = 0
     for feature in features:
@@ -108,6 +108,26 @@ def load_model(file_name):
  
     return (window_size, stage_thresholds, tree_counts, 
             feature_vals, rect_counts, rectangles)
+
+
+@jit(nb.void(nb.uint8[:, :, ::1], nb.uint8[:, ::1]), nopython=True)
+def convert_rgb2gray(in_pixels, out_pixels):
+    '''
+    Convert color image to grayscale image.
+ 
+    in_pixels : numpy.ndarray with shape=(h, w, 3)
+                h, w is height, width of image
+                3 is colors with BGR (blue, green, red) order
+        Input RGB image
+    
+    out_pixels : numpy.ndarray with shape=(h, w)
+        Output image in grayscale
+    '''
+    for r in range(len(in_pixels)):
+        for c in range(len(in_pixels[0])):
+            out_pixels[r, c] = (in_pixels[r, c, 0] * 0.114 + 
+                                in_pixels[r, c, 1] * 0.587 + 
+                                in_pixels[r, c, 2] * 0.299)
 
 
 @cuda.jit(nb.void(nb.uint8[:, :, ::1], nb.uint8[:, ::1]))
@@ -156,20 +176,20 @@ def draw_rect(img, rect, color=0, thick=1):
 
 
 @cuda.jit(device=True)
-def calc_sum_rect(sat, loc, rect, scale):
+def calc_sum_rect(sat, loc, rect):
     '''
     Evaluate feature.
     '''
-    tlx = loc[0] + np.int32(rect[0] * scale)
-    tly = loc[1] + np.int32(rect[1] * scale)
-    brx = loc[0] + np.int32((rect[0] + rect[2]) * scale)
-    bry = loc[1] + np.int32((rect[1] + rect[3]) * scale)
-    return (sat[tly, tlx] + sat[bry, brx] - sat[bry, tlx] - sat[tly, brx]) * rect[4]
- 
+    tlx = loc[0] + rect[0]
+    tly = loc[1] + rect[1]
+    brx = loc[0] + rect[0] + rect[2]
+    bry = loc[1] + rect[1] + rect[3]
+    return (sat[tly, tlx] + sat[bry, brx] - sat[bry, tlx] - sat[tly, brx])
+
 
 @cuda.jit()
 def detect_kernel(base_win_sz, stage_thresholds, tree_counts, 
-                  feature_vals, rect_counts, rectangles, sat, sqsat, 
+                  feature_vals, rect_counts, rectangles, weights, sat, sqsat, 
                   scale, scale_idx, sld_w, sld_h, step, candidates_w, num_candidates, is_pass):
     x, y = cuda.grid(2)
     x_sat = x * step
@@ -197,10 +217,10 @@ def detect_kernel(base_win_sz, stage_thresholds, tree_counts,
                 # Implement stump-base decision tree (tree has one feature) for now.
                 # Each feature consists of 2 or 3 rectangle.
                 rect_idx = rect_counts[tr_idx]
-                ft_sum = (calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx], scale) + 
-                        calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+1], scale))
+                ft_sum = (calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx]) * weights[tr_idx] + 
+                        calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+1]) * rectangles[rect_idx+1][4])
                 if rect_idx + 2 < rect_counts[tr_idx+1]:
-                    ft_sum += calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+2], scale)
+                    ft_sum += calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+2]) * rectangles[rect_idx+2][4]
                 
                 # Compare ft_sum/(area*std) with threshold to choose return value.
                 stg_sum += (feature_vals[tr_idx][1] 
@@ -210,7 +230,26 @@ def detect_kernel(base_win_sz, stage_thresholds, tree_counts,
             if stg_sum < stage_thresholds[stg_idx]:
                 return 
 
-        is_pass[x + y * candidates_w + num_candidates[scale_idx]]= True
+        is_pass[x + y * candidates_w + num_candidates[scale_idx]] = True
+
+
+@jit(nopython=True, cache=True)
+def compile_features(org_rects, rects, weights, rect_counts, scale):
+    '''
+    Scale features and weight correction.
+    '''
+    for ft_idx in range(0, len(rect_counts) - 1):
+        sum = 0
+        for i in range(rect_counts[ft_idx], rect_counts[ft_idx+1]):
+            rects[i][0] = org_rects[i][0] * scale
+            rects[i][1] = org_rects[i][1] * scale
+            rects[i][2] = org_rects[i][2] * scale
+            rects[i][3] = org_rects[i][3] * scale
+            if i == rect_counts[ft_idx]:
+                area0 = rects[i][2] * rects[i][3]
+            else:
+                sum += rects[i][2] * rects[i][3] * rects[i][4]
+        weights[ft_idx] = -sum / area0
 
 
 def detect_multi_scale(model, sats, out_img, scale_factor=1.1):
@@ -222,40 +261,48 @@ def detect_multi_scale(model, sats, out_img, scale_factor=1.1):
     num_candidates = List()
     total_candidates = 0
     
+    stream_list = []
+
     scale = 1.0
     while scale < max_scale:
         num_candidates.append(total_candidates)
         cur_win_size = (win_size * scale).astype(np.int32)
-        step = int(1.25 * scale + 0.5)
+        step = np.int(max(2, scale))
         sld_h = height - cur_win_size[1]
         sld_w = width - cur_win_size[0]
         total_candidates += math.ceil(sld_w / step) * math.ceil(sld_h / step)
         scale *= scale_factor
+        stream_list.append(cuda.stream())
 
     d_is_pass = cuda.device_array(total_candidates, dtype=np.bool)
     d_num_candidates = nb.cuda.to_device(num_candidates)
 
     base_win_sz, stage_thresholds, tree_counts, \
         feature_vals, rect_counts, rectangles = model
+    org_rects = model[5].copy()
+    weights = np.empty(len(feature_vals)) # modified weight of first rect of each feature'
 
     d_base_win_size = cuda.to_device(base_win_sz)
     d_stage_thresholds = cuda.to_device(stage_thresholds)
     d_tree_counts = cuda.to_device(tree_counts)
     d_feature_vals = cuda.to_device(feature_vals)
     d_rect_count = cuda.to_device(rect_counts)
-    d_rectangles = cuda.to_device(rectangles)
 
     scale = 1.0
     scale_idx = 0
     while scale < max_scale:
+        compile_features(org_rects, rectangles, weights, rect_counts, scale)
+        stream = stream_list[scale_idx]
+        d_rectangles = cuda.to_device(rectangles, stream)  
+        d_weights = cuda.to_device(weights, stream)     
         cur_win_size = (win_size * scale).astype(np.int32)
-        step = int(1.25 * scale + 0.5)
+        step = np.int(max(2, scale))
         sld_w = width - cur_win_size[0]
         sld_h = height - cur_win_size[1]
         grid_size = (math.ceil((sld_w) / BLOCK_SIZE[0]), 
                      math.ceil((sld_h) / BLOCK_SIZE[1]))        
-        detect_kernel[grid_size, BLOCK_SIZE](d_base_win_size, d_stage_thresholds, d_tree_counts,
-                                             d_feature_vals, d_rect_count, d_rectangles, 
+        detect_kernel[grid_size, BLOCK_SIZE, stream](d_base_win_size, d_stage_thresholds, d_tree_counts,
+                                             d_feature_vals, d_rect_count, d_rectangles, d_weights,
                                              sats[0], sats[1], scale, scale_idx, 
                                              sld_w, sld_h, step, math.ceil(sld_w / step), d_num_candidates, d_is_pass)
         scale *= scale_factor
@@ -275,7 +322,7 @@ def delete_zero(win_size, height, width, scale_factor, is_pass):
     idx = 0
     while scale < max_scale:
         cur_win_size = (win_size * scale).astype(np.int32)
-        step = int(1.25 * scale + 0.5)
+        step = np.int(max(2, scale))
         sld_h = height - cur_win_size[1]
         sld_w = width - cur_win_size[0]
         for y in range(0, sld_h, step):
@@ -375,7 +422,7 @@ def group_rectangles(rectangles, min_neighbors=3, eps=0.2):
 
 
 def run(model, in_img, out_img, 
-        scale_factor=1.1, min_neighbors=3, eps=0.2, debug=True):
+        scale_factor=1.1, min_neighbors=3, eps=0.2, debug=True, test=False):
     '''
     Implement object detection workflow.
     '''
@@ -388,9 +435,14 @@ def run(model, in_img, out_img,
     start = timer()
 
     # Convert image to grayscale
-    d_in_img = cuda.to_device(in_img)
-    d_gray_img = cuda.device_array((height, width), dtype=np.uint8)
-    convert_rgb2gray_kernel[grid_size, BLOCK_SIZE](d_in_img, d_gray_img)
+    if test:
+        gray_img = np.empty((height, width), dtype=in_img.dtype)
+        convert_rgb2gray(in_img, gray_img)
+        d_gray_img = cuda.to_device(gray_img)
+    else:
+        d_in_img = cuda.to_device(in_img)
+        d_gray_img = cuda.device_array((height, width), dtype=np.uint8)
+        convert_rgb2gray_kernel[grid_size, BLOCK_SIZE](d_in_img, d_gray_img)
  
     # Calculate Summed Area Table (SAT) and squared SAT
     d_sat = cuda.device_array((height + 1, width + 1), dtype=np.int64)
@@ -469,6 +521,7 @@ def main(_argv=None):
     parser.add_argument('-s', default=1.1, type=float, help='Scale factor')
     parser.add_argument('-m', default=3, type=int, help='Min neighbors')
     parser.add_argument('-e', default=0.2, type=float, help='Epsilon')
+    parser.add_argument('--test', default=False, action='store_true', help='Grayscale conversion on host')
     params = parser.parse_args(argv)
  
     #Load Haar Cascade model
@@ -484,7 +537,7 @@ def main(_argv=None):
     scale_factor = params.s
     min_neighbors = params.m
     eps = params.e
-    run(model, in_img, out_img, scale_factor, min_neighbors, eps, debug=True)
+    run(model, in_img, out_img, scale_factor, min_neighbors, eps, debug=True, test=params.test)
  
     # Write output image
     cv.imwrite(params.output, out_img)
