@@ -104,5 +104,19 @@
     <td>Hoàn thành cài đặt song song hóa</td>
     <td>Xây dựng lại kịch bản thí nghiệm thể hiện tính đúng đắn của cài đặt<br>Tiếp tục hoàn thiện báo cáo phần thiết kế</td>
   </tr>
+  <tr>
+    <td>9</td>
+    <td>9/6-16/6</td>
+    <td>Tìm kiếm ảnh test<br>Đánh giá độ lỗi với OpenCV và Tracking.js<br>Ghi nhận thời gian chạy giữa các hàm</td>
+    <td>Hoàn thành cài đặt song song hóa v0<br>Cài đặt phiên bản cải tiến v1</td>
+    <td>Thêm weight correction<br>Hoàn thành hàm song song hoá v0<br>Cài đặt hàm cải tiến v2<br>Hoàn thiện báo cáo</td>
+  </tr>
+  <tr>
+    <td>10</td>
+    <td>17/6-23/6</td>
+    <td>Tối ưu hoá bản cải tiến v1</td>
+    <td>Tiếp tục tối ưu hoá phiên bản cải tiến v1</td>
+    <td>Tiếp tục tối ưu hoá phiên bản cải tiến v2<br></td>
+  </tr>
 </tbody>
 </table>
