@@ -4,6 +4,8 @@ import numpy as np
 from numba import jit
 import xml.etree.ElementTree as ET
 import math
+import glob
+import os
  
 def load_model(file_name):
     '''
@@ -358,20 +360,32 @@ def main():
     ofname = sys.argv[2]
  
     # #Load Haar Cascade model
-    # model = load_model('haarcascade_frontalface_default.xml')
+    model = load_model('haarcascade_frontalface_alt.xml')
+
+    # run via all images
+    # filenames = glob.glob("01000/*.png")
+    # filenames.sort()
+    # for in_name in filenames:
+    #     in_img = cv.imread(in_name)
+    #     out_img = in_img.copy()
+
+    #     run(model,in_img,out_img)
+    #     out_path = 'C:/Users/nhanhieuhcmus/Desktop/NAM_4_HK2/Parallel-Programming-Application/project/output'
+    #     out_name = in_name.replace("01000\\","")
+    #     cv.imwrite(os.path.join(out_path, out_name), out_img)
  
-    # # Read image
+    # Read image
     # in_img = cv.imread(ifname)
  
     # out_img = in_img.copy()
 
-    # # Run 
+    # Run 
     # run(model,in_img,out_img)
 
-    # # Write image
+    # Write image
     # cv.imwrite(ofname, out_img)
 
-    # Opening image
+    # Open CV
     img = cv.imread("chon-anh-ghep.png")
     img_gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
     img_rgb = cv.cvtColor(img, cv.COLOR_BGR2RGB)
