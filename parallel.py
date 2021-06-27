@@ -187,7 +187,6 @@ def calc_sum_rect(sat, loc, rect):
     bry = loc[1] + rect[1] + rect[3]
     return (sat[tly, tlx] + sat[bry, brx] - sat[bry, tlx] - sat[tly, brx])
    
-
 @cuda.jit()
 def detect_kernel(base_win_sz, stage_thresholds, tree_counts, 
                   feature_vals, rect_counts, rectangles, weights, sat, sqsat, 
@@ -234,113 +233,6 @@ def detect_kernel(base_win_sz, stage_thresholds, tree_counts,
 
         is_pass[x + y * candidates_w + num_candidates[scale_idx]] = True
 
-@cuda.jit()
-def detect_kernel_v2(base_win_sz, stage_thresholds, tree_counts, 
-                  feature_vals, rect_counts, rectangles, weights, sat, sqsat, 
-                  scale, sld_w, sld_h, step, candidates_w, is_pass):
-    # Detect multiple windows asynchronously
-    x, y = cuda.grid(2)
-    x_sat = x * step
-    y_sat = y * step
-    
-    w, h = np.int32(base_win_sz[0] * scale), np.int32(base_win_sz[1] * scale)
-    inv_area = 1 / (w * h)
-
-    if x_sat < sld_w and y_sat < sld_h:
-        # feature_length = len(feature_vals)
-
-        # Shared memory definition for feature values
-        '''
-        for i in prange(feature_step):
-            idx = (tx + ty*cuda.blockDim.x)*feature_step + i
-            if (idx >= feature_length):
-                break
-            s_feature_vals[idx][0] = feature_vals[idx][0]
-            s_feature_vals[idx][1] = feature_vals[idx][1]
-            s_feature_vals[idx][2] = feature_vals[idx][2]
-            s_feature_vals[idx][3] = feature_vals[idx][3]
-        
-        cuda.syncthreads()
-        '''
-
-        win_sum = sat[y_sat][x_sat] + sat[y_sat+h][x_sat+w] - sat[y_sat][x_sat+w] - sat[y_sat+h][x_sat]
-        win_sqsum = sqsat[y_sat][x_sat] + sqsat[y_sat+h][x_sat+w] - sqsat[y_sat][x_sat+w] - sqsat[y_sat+h][x_sat]
-        variance = win_sqsum * inv_area - (win_sum * inv_area) ** 2
-
-        # Reject low-variance intensity region, also take care of negative variance
-        # value due to inaccuracy floating point operation.
-        if variance < 100:
-            return 
-
-        std = math.sqrt(variance)
-
-        num_stages = len(stage_thresholds)
-        for stg_idx in range(num_stages):
-            stg_sum = 0.0
-            for tr_idx in range(tree_counts[stg_idx], tree_counts[stg_idx+1]): 
-                # Implement stump-base decision tree (tree has one feature) for now.
-                # Each feature consists of 2 or 3 rectangle.
-                rect_idx = rect_counts[tr_idx]
-                ft_sum = (calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx]) * weights[tr_idx] + 
-                        calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+1]) * rectangles[rect_idx+1][4])
-                if rect_idx + 2 < rect_counts[tr_idx+1]:
-                    ft_sum += calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+2]) * rectangles[rect_idx+2][4]
-               
-                # Compare ft_sum/(area*std) with threshold to choose return value.
-                stg_sum += (feature_vals[tr_idx][1] 
-                            if ft_sum * inv_area < feature_vals[tr_idx][0] * std 
-                            else feature_vals[tr_idx][2])
-
-            if stg_sum < stage_thresholds[stg_idx]:
-                return  
-        is_pass[x + y * candidates_w] = True
-
-@cuda.jit()
-def detect_kernel_v3(base_win_sz, stage_thresholds, tree_counts, 
-                  feature_vals, rect_counts, rectangles, sat, sqsat, 
-                  scale, scale_idx, sld_w, sld_h, step, candidates_w, num_candidates, is_pass):
-    # Detect multiple windows asynchronously
-    x, y = cuda.grid(2)
-    x_sat = x * step
-    y_sat = y * step
-
-    w, h = np.int32(base_win_sz[0] * scale), np.int32(base_win_sz[1] * scale)
-    inv_area = 1 / (w * h)
-
-    if x_sat < sld_w and y_sat < sld_h:
-        win_sum = sat[y_sat][x_sat] + sat[y_sat+h][x_sat+w] - sat[y_sat][x_sat+w] - sat[y_sat+h][x_sat]
-        win_sqsum = sqsat[y_sat][x_sat] + sqsat[y_sat+h][x_sat+w] - sqsat[y_sat][x_sat+w] - sqsat[y_sat+h][x_sat]
-        variance = win_sqsum * inv_area - (win_sum * inv_area) ** 2
-
-        # Reject low-variance intensity region, also take care of negative variance
-        # value due to inaccuracy floating point operation.
-        if variance < 100:
-            return 
-
-        std = math.sqrt(variance)
-
-        num_stages = len(stage_thresholds)
-        for stg_idx in range(num_stages):
-            stg_sum = 0.0
-            for tr_idx in range(tree_counts[stg_idx], tree_counts[stg_idx+1]): 
-                # Implement stump-base decision tree (tree has one feature) for now.
-                # Each feature consists of 2 or 3 rectangle.
-                rect_idx = rect_counts[tr_idx]
-                ft_sum = (calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx], scale) + 
-                        calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+1], scale))
-                if rect_idx + 2 < rect_counts[tr_idx+1]:
-                    ft_sum += calc_sum_rect(sat, (x_sat, y_sat), rectangles[rect_idx+2], scale)
-                
-                # Compare ft_sum/(area*std) with threshold to choose return value.
-                stg_sum += (feature_vals[tr_idx][1] 
-                            if ft_sum * inv_area < feature_vals[tr_idx][0] * std 
-                            else feature_vals[tr_idx][2])
-
-            if stg_sum < stage_thresholds[stg_idx]:
-                return 
-
-        is_pass[x + y * candidates_w + num_candidates[scale_idx]] = True
-
 
 @jit(nopython=True, cache=True)
 def compile_features(org_rects, rects, weights, rect_counts, scale):
@@ -359,7 +251,6 @@ def compile_features(org_rects, rects, weights, rect_counts, scale):
             else:
                 sum += rects[i][2] * rects[i][3] * rects[i][4]
         weights[ft_idx] = -sum / area0
-
 
 def detect_multi_scale(model, sats, out_img, scale_factor=1.1):
     win_size = model[0]
@@ -419,70 +310,6 @@ def detect_multi_scale(model, sats, out_img, scale_factor=1.1):
     is_pass = d_is_pass.copy_to_host().astype(np.bool)
     return is_pass
 
-def detect_multi_scale_v2(model, sats, out_img, scale_factor=1.1):
-    win_size = model[0]
-
-    # Slide the detector window
-    scale_idx = 0
-    height, width = out_img.shape[:2]
-    max_scale = min(width / win_size[0], height / win_size[1])
-
-    # Number of candidates of each scale
-    total_candidates = 0    
-    stream_list = list()
-    scale = 1.0    
-
-    while scale < max_scale:
-        cur_win_size = (win_size * scale).astype(np.int32)
-        step = np.int(max(2, scale))
-        sld_h = height - cur_win_size[1]
-        sld_w = width - cur_win_size[0]
-        total_candidates += math.ceil(sld_w / step) * math.ceil(sld_h / step)
-        scale *= scale_factor
-        stream = cuda.stream()
-        stream_list.append(stream)        
-        
-    base_win_sz, stage_thresholds, tree_counts, \
-        feature_vals, rect_counts, rectangles = model
-    org_rects = model[5].copy()
-    weights = np.empty(len(feature_vals)) # modified weight of first rect of each feature'
-
-    d_base_win_size = cuda.to_device(base_win_sz)
-    d_stage_thresholds = cuda.to_device(stage_thresholds)
-    d_tree_counts = cuda.to_device(tree_counts)
-    d_feature_vals = cuda.to_device(feature_vals)
-    d_rect_count = cuda.to_device(rect_counts)
-    d_rectangles = cuda.to_device(rectangles)  
-
-    scale = 1.0 
-    idx_next = 0
-    idx_prev = 0
-    d_is_pass = cuda.device_array(total_candidates, dtype=np.bool)
-    while scale < max_scale:    
-        compile_features(org_rects, rectangles, weights, rect_counts, scale)       
-        d_rectangles = cuda.to_device(rectangles, stream = stream_list[scale_idx])  
-        d_weights = cuda.to_device(weights, stream = stream_list[scale_idx]) 
-        cur_win_size = (win_size * scale).astype(np.int32)
-        step = np.int(max(2, scale))
-        sld_w = width - cur_win_size[0]
-        sld_h = height - cur_win_size[1]
-        grid_size = (math.ceil((sld_w) / BLOCK_SIZE[0]), 
-                     math.ceil((sld_h) / BLOCK_SIZE[1]))      
-        idx_next += (math.ceil(sld_w / step))*(math.ceil(sld_h / step))
-
-        detect_kernel_v2[grid_size, BLOCK_SIZE, stream_list[scale_idx]](d_base_win_size, d_stage_thresholds, d_tree_counts,
-                                             d_feature_vals, d_rect_count, d_rectangles, 
-                                             d_weights, sats[0], sats[1], scale, 
-                                             sld_w, sld_h, step, math.ceil(sld_w / step), d_is_pass[idx_prev:idx_next])
-
-
-        scale *= scale_factor
-        scale_idx += 1    
-        idx_prev = idx_next
-
-    is_pass = d_is_pass.copy_to_host().astype(np.bool)
-
-    return is_pass
 
 @jit(nb.types.ListType(nb.int64[::1])(nb.int64[::1], nb.int64, nb.int64, nb.float64, nb.boolean[::1]), nopython=True)
 def delete_zero(win_size, height, width, scale_factor, is_pass):
@@ -510,19 +337,15 @@ def delete_zero(win_size, height, width, scale_factor, is_pass):
 def group_rectangles(rectangles, min_neighbors=3, eps=0.2):
     '''
     Group object candidate rectangles.
-
     Parameters
     ----------
     rectangles: list(np.array(4))
         List of rectangles
-
     min_neighbors: int
         Minimum neighbors each candidate rectangle should have to retain it.
-
     eps: float
         Relative difference between sides of the rectangles to merge them into 
     a group.
-
     Return
     ------
     A list of grouped rectangles.
@@ -622,31 +445,22 @@ def run(model, in_img, out_img,
     cal_cols_cumsum[math.ceil(width/BLOCK_SIZE[0]), BLOCK_SIZE[0]](d_gray_img, d_sat, d_sqsat)
 
     # Detect object
-    candidates = detect_multi_scale_v2(model, (d_sat, d_sqsat), out_img, scale_factor = scale_factor)
+    candidates = detect_multi_scale(model, (d_sat, d_sqsat), out_img, scale_factor = scale_factor)
     print('Number of candidates:', len(candidates))
-    end1 = timer()
-    total = (end1 - start) * 1000
-    print(f'Detect time: {total}')
 
     # Filter windows that didn't pass all stages
     result = delete_zero(model[0], height, width, scale_factor, candidates)
     print('Number of detections:', len(result))
-    end2 = timer()
-    total = (end2 - end1) * 1000
-    print(f'Delete time: {total}')
 
     # Group candidates
     final_detections = group_rectangles(result, min_neighbors, eps)
-    end3 = timer()
-    total = (end3 - end2)*1000
-    print(f'Group time: {total}')
 
     # Draw bounding box on output image
     for rec in final_detections:
-        draw_rect(out_img, rec, color=0, thick=1)
+        draw_rect(out_img, rec, color=np.array([0,0,255], dtype=np.uint8), thick=2)
 
-    end4 = timer()
-    total_time = (end4 - start) * 1000
+    end = timer()
+    total_time = (end - start) * 1000
     print(f'Total time on host: {total_time:0.6f} ms\n')
 
     # Test
@@ -686,7 +500,7 @@ def test_calculate_sat(img, sat, sqsat):
     assert(total == sat_np[-1, -1])
     assert(np.array_equal(sat[1:, 1:], sat_np))
     assert(np.array_equal(sqsat[1:, 1:], sqsat_np))
-    print('Calculate SAT: Pass');
+    print('Calculate SAT: Pass')
 
 
 def main(_argv=None):
