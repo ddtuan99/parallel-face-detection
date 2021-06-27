@@ -258,7 +258,7 @@ def detect_multi_scale(model, sats, out_img, scale_factor=1.1):
     max_scale = min(width / win_size[0], height / win_size[1])
 
     # Number of candidates before each scale
-    num_candidates = List()
+    num_candidates = []
     total_candidates = 0
     
     scale = 1.0
