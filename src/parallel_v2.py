@@ -395,7 +395,7 @@ def detect_multi_scale(model, sats, out_img, scale_factor=1.1):
     for idx, sc_data in enumerate(scale_data):
         live_cands[idx] = sc_data[4].copy_to_host(stream=tmp_stream)[0]
 
-    return is_pass, live_cands, num_candidates
+    return is_pass, live_cands, np.array(num_candidates)
 
 
 @jit(nopython=True, cache=True)
