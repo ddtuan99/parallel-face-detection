@@ -152,16 +152,17 @@ def calculate_sat(in_pixels, sat, sqsat):
             sqsat[r + 1, c + 1] = row_sqsum + sqsat[r, c + 1]
 
 
-@jit(nb.void(nb.uint8[:, :, ::1], nb.int64[::1], nb.uint8[::1], nb.int64), nopython=True, cache=True)
-def draw_rect(img, rect, color=0, thick=1):
+@jit(nb.void(nb.uint8[:, :, ::1], nb.types.ListType(nb.int64[::1]), nb.uint8[::1], nb.int64), nopython=True, cache=True)
+def draw_rect(img, final_detections, color=0, thick=1):
     '''
     Draw bounding box on image.
     '''
-    (x, y, w, h), t = rect, thick
-    img[y:y+h, x-t:x+t+1] = color
-    img[y:y+h, x+w-t:x+w+t+1] = color
-    img[y-t:y+t+1, x:x+w] = color
-    img[y+h-t:y+h+t+1, x:x+w] = color
+    for rect in final_detections:
+        (x, y, w, h), t = rect, thick
+        img[y:y+h, x-t:x+t+1] = color
+        img[y:y+h, x+w-t:x+w+t+1] = color
+        img[y-t:y+t+1, x:x+w] = color
+        img[y+h-t:y+h+t+1, x:x+w] = color
 
 
 @jit(nb.int64(nb.int64[:, ::1], nb.types.UniTuple(nb.int64, 2), nb.int32[::1]), nopython=True, cache=True)
@@ -391,8 +392,7 @@ def run(model, in_img, out_img,
     final_detections = group_rectangles(candidates, min_neighbors, eps)
 
     # Draw bounding box on output image
-    for rec in final_detections:
-        draw_rect(out_img, rec, color=np.array([0,0,255], dtype=np.uint8), thick=2)
+    draw_rect(out_img, final_detections, color=np.array([0,0,255], dtype=np.uint8), thick=2)
 
     end = timer()
     total_time = (end - start) * 1000
