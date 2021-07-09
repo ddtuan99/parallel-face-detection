@@ -300,7 +300,7 @@ def detect_multi_scale(model, sats, out_img, scale_factor=1.1):
     d_feature_vals = cuda.to_device(feature_vals)
     d_rect_count = cuda.to_device(rect_counts)
 
-    stage_segments = [0, 5, 13, len(stage_thresholds)]
+    stage_segments = [0, 2, 8, len(stage_thresholds)]
 
     # s_event = cuda.event()
     # s_event.record(cuda.default_stream())
@@ -530,7 +530,8 @@ def run(model, in_img, out_img,
     cal_cols_cumsum[grid_size[0], BLOCK_SIZE[0]](d_gray_img, d_sat, d_sqsat)
 
     # Detect object
-    candidates, live_cands, num_cands = detect_multi_scale(model, (d_sat, d_sqsat), out_img, scale_factor=scale_factor)
+    with cuda.defer_cleanup():
+        candidates, live_cands, num_cands = detect_multi_scale(model, (d_sat, d_sqsat), out_img, scale_factor=scale_factor)
 
     # Filter windows that didn't pass all stages
     result = delete_zero(model[0], height, width, scale_factor, candidates, live_cands, num_cands)
